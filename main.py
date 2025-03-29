@@ -57,14 +57,36 @@ def load_openapi_data(url_or_file):
 async def serve_ui():
     return FileResponse("static/index.html")
 
-# Endpoint to load OpenAPI data
-@app.post("/load_openapi/")
-async def load_openapi(url_or_file: str):
-    try:
-        openapi_data = load_openapi_data(url_or_file)
-        return {"status": "success", "openapi_data": openapi_data}
-    except Exception as e:
-        return {"status": "failure", "message": str(e)}
+@app.post("/load_openapi")
+async def load_openapi(url: str = Form(None), file: UploadFile = File(None)):
+    global openapi_data
+
+    # Load OpenAPI data from URL
+    if url:
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                openapi_data = response.json()  # Assuming URL returns JSON
+                return JSONResponse(content={"message": "OpenAPI data loaded from URL."})
+            else:
+                raise HTTPException(status_code=400, detail="Unable to fetch data from the provided URL.")
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=500, detail="Error fetching data from the URL.")
+
+    # Load OpenAPI data from file
+    if file:
+        try:
+            content = await file.read()
+            try:
+                openapi_data = json.loads(content)  # Try to parse as JSON
+            except json.JSONDecodeError:
+                try:
+                    openapi_data = yaml.safe_load(content)  # Try parsing as YAML
+                except yaml.YAMLError:
+                    raise HTTPException(status_code=400, detail="Invalid file format. Must be JSON or YAML.")
+            return JSONResponse(content={"message": "OpenAPI data loaded from file."})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail="Error reading the file.")
 
 # WebSocket for chat interaction
 @app.websocket("/chat")
