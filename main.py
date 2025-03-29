@@ -1,115 +1,86 @@
 import json
 import os
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile
+from fastapi import FastAPI, UploadFile, Form, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
 from langchain_openai import AzureChatOpenAI
-from dotenv import load_dotenv
-from LLMSequenceGenerator import LLMSequenceGenerator  # Assuming you have this in a separate file
+from LLMSequenceGenerator import LLMSequenceGenerator
 
-# Load environment variables from .env file
-load_dotenv()
+app = FastAPI()
 
-# Initialize the AzureChatOpenAI client
+# Allow all CORS origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Load Azure OpenAI properties from environment variables
 llm = AzureChatOpenAI(
-    azure_deployment="gpt-35-turbo",  # or your deployment
-    api_version="2023-06-01-preview",  # or your API version
+    azure_deployment=os.getenv("AZURE_DEPLOYMENT", "gpt-35-turbo"),
+    api_version=os.getenv("AZURE_API_VERSION", "2023-06-01-preview"),
     temperature=0,
     max_tokens=None,
     timeout=None,
     max_retries=2,
 )
 
-# Initialize LLMSequenceGenerator
-sequence_generator = LLMSequenceGenerator(llm)
+llm_generator = LLMSequenceGenerator(llm)
 
-# Create FastAPI instance
-app = FastAPI()
+openapi_data = None  # Store OpenAPI data globally
 
-# Serve static files (for the HTML, CSS, JS)
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Allow CORS from any origin
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins (can restrict later)
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# In-memory storage for OpenAPI data
-app.state.openapi_data = None
-
-# Pydantic model for user input
-class UserInputRequest(BaseModel):
-    user_input: str
-
-
-@app.post("/upload_openapi_url")
-async def upload_openapi_url(url: str):
-    """
-    Handle OpenAPI URL input and fetch the OpenAPI spec from the URL.
-    """
-    global openapi_data
-    try:
-        # Fetch OpenAPI spec from URL
-        response = requests.get(url)
-        if response.status_code == 200:
-            # Parse the OpenAPI JSON data from URL
-            openapi_data = response.json()
-            return JSONResponse(content={"message": "OpenAPI loaded from URL successfully."}, status_code=200)
-        else:
-            raise HTTPException(status_code=422, detail="Failed to fetch OpenAPI from URL")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching OpenAPI: {str(e)}")
-
-
-# Endpoint to upload OpenAPI data (JSON file)
 @app.post("/upload_openapi")
 async def upload_openapi(file: UploadFile = File(...)):
+    global openapi_data
     try:
-        # Read the uploaded file content
-        openapi_content = await file.read()
-        
-        # Parse the JSON data from the file
-        openapi_json = json.loads(openapi_content.decode("utf-8"))
-        
-        # Store OpenAPI data in the app's state
-        app.state.openapi_data = openapi_json
-        
-        return {"message": "OpenAPI file uploaded successfully", "data": openapi_json}
-    
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error uploading OpenAPI file: {str(e)}")
+        openapi_data = json.loads(await file.read())
+        return JSONResponse(content={"message": "OpenAPI file uploaded successfully."})
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON format.")
 
-# Endpoint to submit OpenAPI data and interact with LLM
-@app.post("/submit_openapi")
-async def submit_openapi(user_input: UserInputRequest):
+@app.post("/upload_openapi_url")
+async def upload_openapi_url(url: str = Form(...)):
+    global openapi_data
     try:
-        # Check if OpenAPI data is available
-        openapi_data = app.state.openapi_data
-        if not openapi_data:
-            raise HTTPException(status_code=400, detail="No OpenAPI data available. Please upload OpenAPI data first.")
-        
-        # Ensure user input is provided
-        if not user_input.user_input:
-            raise HTTPException(status_code=422, detail="User input cannot be empty.")
-        
-        # Use LLM to process the input and provide a response using LLMSequenceGenerator
-        response = await sequence_generator.answer_general_query(user_input.user_input, openapi_data)
-        
-        # Return LLM's response
-        return {"message": "LLM response", "response": response}
-    
-    except HTTPException as e:
-        raise e
+        # Simulate fetching JSON from URL (replace with real HTTP request in production)
+        openapi_data = {"mocked": "This would be fetched from the URL"}  # Replace with actual fetching logic
+        return JSONResponse(content={"message": "OpenAPI schema loaded from URL."})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
-# Serve the UI page (HTML form and chatbot interface)
+@app.post("/determine_intent")
+async def determine_intent(user_input: str = Form(...)):
+    if not openapi_data:
+        raise HTTPException(status_code=400, detail="OpenAPI data not uploaded.")
+    response = await llm_generator.determine_intent(user_input, openapi_data)
+    return JSONResponse(content={"intent": response})
+
+@app.post("/suggest_sequence")
+async def suggest_sequence():
+    if not openapi_data:
+        raise HTTPException(status_code=400, detail="OpenAPI data not uploaded.")
+    response = await llm_generator.suggest_sequence(openapi_data)
+    return JSONResponse(content={"sequence": response})
+
+@app.post("/extract_load_test_params")
+async def extract_load_test_params(user_input: str = Form(...)):
+    response = await llm_generator.extract_load_test_params(user_input)
+    return JSONResponse(content={"num_users": response[0], "duration": response[1]})
+
+@app.post("/extract_api_details")
+async def extract_api_details(user_input: str = Form(...)):
+    response = await llm_generator.extract_api_details(user_input)
+    return JSONResponse(content={"method": response[0], "endpoint": response[1]})
+
+@app.post("/generate_payload")
+async def generate_payload(endpoint: str = Form(...)):
+    if not openapi_data:
+        raise HTTPException(status_code=400, detail="OpenAPI data not uploaded.")
+    response = await llm_generator.generate_payload(endpoint, openapi_data)
+    return JSONResponse(content={"payload": response})
+
 @app.get("/")
-async def serve_ui():
-    return FileResponse("static/index.html")
+async def root():
+    return JSONResponse(content={"message": "API is running. Upload OpenAPI data and interact with LLM."})
