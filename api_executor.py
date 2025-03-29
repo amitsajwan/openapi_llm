@@ -1,23 +1,24 @@
-import requests
+import httpx
 import asyncio
-import random
 
 class APIExecutor:
+    def __init__(self, openapi_data):
+        self.openapi_data = openapi_data
+    
     async def execute_api(self, method, endpoint, payload=None):
-        url = f"{self.base_url}{endpoint}"
-        headers = self.headers
-        response = requests.request(method, url, headers=headers, json=payload)
-        return response.json()
-
-    async def run_load_test(self, openapi_data, num_users, duration):
-        endpoints = openapi_data.get_endpoints()
-        results = []
+        """Executes a given API request."""
+        base_url = self.openapi_data.get("servers", [{}])[0].get("url", "")
+        url = f"{base_url}{endpoint}"
         
-        async def execute_random_api():
-            endpoint = random.choice(endpoints)
-            response = await self.execute_api("GET", endpoint)
-            return response
+        async with httpx.AsyncClient() as client:
+            response = await client.request(method, url, json=payload)
+            return response.json()
+    
+    async def run_load_test(self, num_users, duration):
+        """Runs a load test with multiple users over a given duration."""
+        async def single_user_test():
+            return await self.execute_api("GET", list(self.openapi_data["paths"].keys())[0])
         
-        tasks = [execute_random_api() for _ in range(num_users)]
+        tasks = [single_user_test() for _ in range(num_users)]
         results = await asyncio.gather(*tasks)
         return results
