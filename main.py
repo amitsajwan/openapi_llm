@@ -47,6 +47,26 @@ app.state.openapi_data = None
 class UserInputRequest(BaseModel):
     user_input: str
 
+
+@app.post("/upload_openapi_url")
+async def upload_openapi_url(url: str):
+    """
+    Handle OpenAPI URL input and fetch the OpenAPI spec from the URL.
+    """
+    global openapi_data
+    try:
+        # Fetch OpenAPI spec from URL
+        response = requests.get(url)
+        if response.status_code == 200:
+            # Parse the OpenAPI JSON data from URL
+            openapi_data = response.json()
+            return JSONResponse(content={"message": "OpenAPI loaded from URL successfully."}, status_code=200)
+        else:
+            raise HTTPException(status_code=422, detail="Failed to fetch OpenAPI from URL")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching OpenAPI: {str(e)}")
+
+
 # Endpoint to upload OpenAPI data (JSON file)
 @app.post("/upload_openapi")
 async def upload_openapi(file: UploadFile = File(...)):
