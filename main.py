@@ -1,20 +1,21 @@
 import json
-from fastapi import FastAPI, HTTPException, Request
+import os
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from langchain_openai import AzureChatOpenAI
-from LLMSequenceGenerator import LLMSequenceGenerator
 from dotenv import load_dotenv
-import os
+from LLMSequenceGenerator import LLMSequenceGenerator  # Assuming you have this in a separate file
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
 # Initialize the AzureChatOpenAI client
 llm = AzureChatOpenAI(
     azure_deployment="gpt-35-turbo",  # or your deployment
-    api_version="2023-06-01-preview",  # or your api version
+    api_version="2023-06-01-preview",  # or your API version
     temperature=0,
     max_tokens=None,
     timeout=None,
@@ -24,7 +25,7 @@ llm = AzureChatOpenAI(
 # Initialize LLMSequenceGenerator
 sequence_generator = LLMSequenceGenerator(llm)
 
-# Define FastAPI app
+# Create FastAPI instance
 app = FastAPI()
 
 # Serve static files (for the HTML, CSS, JS)
@@ -48,14 +49,13 @@ class UserInputRequest(BaseModel):
 
 # Endpoint to upload OpenAPI data (JSON file)
 @app.post("/upload_openapi")
-async def upload_openapi(file: Request):
+async def upload_openapi(file: UploadFile = File(...)):
     try:
-        # Get the file from the request
-        file_data = await file.form()
-        openapi_file = file_data["file"]
+        # Read the uploaded file content
+        openapi_content = await file.read()
         
-        # Parse the JSON data
-        openapi_json = json.loads(openapi_file.file.read().decode("utf-8"))
+        # Parse the JSON data from the file
+        openapi_json = json.loads(openapi_content.decode("utf-8"))
         
         # Store OpenAPI data in the app's state
         app.state.openapi_data = openapi_json
