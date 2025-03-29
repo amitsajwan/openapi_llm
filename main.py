@@ -1,14 +1,17 @@
 import json
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from langchain_openai import AzureChatOpenAI
-from LLMSequenceGenerator import LLMSequenceGenerator  # Importing the LLMSequenceGenerator module
+from LLMSequenceGenerator import LLMSequenceGenerator
 from dotenv import load_dotenv
+import os
 
+# Load environment variables
 load_dotenv()
 
-# Initialize AzureChatOpenAI client
+# Initialize the AzureChatOpenAI client
 llm = AzureChatOpenAI(
     azure_deployment="gpt-35-turbo",  # or your deployment
     api_version="2023-06-01-preview",  # or your api version
@@ -16,14 +19,16 @@ llm = AzureChatOpenAI(
     max_tokens=None,
     timeout=None,
     max_retries=2,
-    # other params...
 )
 
-# Initialize the LLMSequenceGenerator with the LLM client
+# Initialize LLMSequenceGenerator
 sequence_generator = LLMSequenceGenerator(llm)
 
 # Define FastAPI app
 app = FastAPI()
+
+# Serve static files (for the HTML, CSS, JS)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Allow CORS from any origin
 app.add_middleware(
@@ -37,7 +42,7 @@ app.add_middleware(
 # In-memory storage for OpenAPI data
 app.state.openapi_data = None
 
-# Pydantic model to validate user input
+# Pydantic model for user input
 class UserInputRequest(BaseModel):
     user_input: str
 
@@ -84,7 +89,7 @@ async def submit_openapi(user_input: UserInputRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-# Entry point to serve the web UI (static files)
+# Serve the UI page (HTML form and chatbot interface)
 @app.get("/")
 async def serve_ui():
-    return {"message": "API is running. You can upload OpenAPI data and submit queries to interact with LLM."}
+    return FileResponse("static/index.html")
