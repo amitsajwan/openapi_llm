@@ -1,29 +1,44 @@
-from openai import OpenAI
+import asyncio
+from api_executor import APIExecutor
+from llm_sequence_generator import LLMSequenceGenerator
 
-class LLMSequenceGenerator:
-    def determine_intent(self, user_input, openapi_data):
-        if "swagger" in user_input.lower() or "openapi" in user_input.lower():
-            return "provide_openapi"
-        elif "list" in user_input.lower() and "apis" in user_input.lower():
-            return "list_apis"
-        elif "run sequence" in user_input.lower():
-            return "run_sequence"
-        elif "load test" in user_input.lower():
-            return "load_test"
-        else:
-            return "general_query"
-
-    def suggest_sequence(self, openapi_data):
-        return ["GET /users", "POST /users", "GET /users/{id}"]
-
-    def extract_load_test_params(self, user_input):
-        num_users = 10
-        duration = 5
-        if "users" in user_input and "minutes" in user_input:
-            parts = user_input.split()
-            for i, word in enumerate(parts):
-                if word.isdigit():
-                    num_users = int(word)
-                if "minute" in parts[i + 1]:
-                    duration = int(word)
-        return num_users, duration
+class APIWorkflowManager:
+    def __init__(self, openapi_data, llm_client):
+        self.openapi_data = openapi_data
+        self.executor = APIExecutor(openapi_data)
+        self.llm = LLMSequenceGenerator(llm_client)
+    
+    async def execute_workflow(self, user_input):
+        """Determines execution sequence and executes API calls."""
+        intent = self.llm.determine_intent(user_input, self.openapi_data)
+        
+        if intent == "run_sequence":
+            sequence = self.llm.suggest_sequence(self.openapi_data)
+            user_confirmation = await self.get_user_confirmation(sequence)
+            if not user_confirmation:
+                return {"error": "Execution cancelled by user."}
+            return await self.run_sequence(sequence)
+        
+        elif intent == "load_test":
+            num_users, duration = self.llm.extract_load_test_params(user_input)
+            return await self.run_load_test(num_users, duration)
+        
+        return {"error": "Invalid request."}
+    
+    async def get_user_confirmation(self, sequence):
+        """Simulates user confirmation for execution sequence."""
+        print(f"Suggested execution sequence: {sequence}")
+        return True  # Assume user confirms for now
+    
+    async def run_sequence(self, sequence):
+        """Executes API calls in a defined sequence."""
+        results = {}
+        for step in sequence:
+            method, endpoint = step["method"], step["endpoint"]
+            payload = step.get("payload", None)
+            results[endpoint] = await self.executor.execute_api(method, endpoint, payload)
+        return results
+    
+    async def run_load_test(self, num_users, duration):
+        """Executes API load testing."""
+        return await self.executor.execute_load_test(num_users, duration)
