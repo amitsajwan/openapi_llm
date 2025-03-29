@@ -9,15 +9,24 @@ class APIWorkflowManager:
         self.llm = LLMSequenceGenerator(llm_client)
     
     async def execute_workflow(self, user_input):
-        """Determines execution sequence and executes API calls."""
+        """Determines execution sequence and executes API calls based on user input."""
         intent = self.llm.determine_intent(user_input, self.openapi_data)
         
-        if intent == "run_sequence":
-            sequence = self.llm.suggest_sequence(self.openapi_data)
-            user_confirmation = await self.get_user_confirmation(sequence)
+        if intent == "provide_openapi":
+            return {"openapi": self.openapi_data}
+        
+        elif intent == "list_apis":
+            return {"apis": list(self.openapi_data["paths"].keys())}
+        
+        elif intent == "general_query":
+            return self.llm.answer_general_query(user_input, self.openapi_data)
+        
+        elif intent == "run_sequence":
+            suggested_sequence = self.llm.suggest_sequence(self.openapi_data)
+            user_confirmation = await self.get_user_confirmation(suggested_sequence)
             if not user_confirmation:
                 return {"error": "Execution cancelled by user."}
-            return await self.run_sequence(sequence)
+            return await self.run_sequence(suggested_sequence)
         
         elif intent == "load_test":
             num_users, duration = self.llm.extract_load_test_params(user_input)
@@ -26,7 +35,7 @@ class APIWorkflowManager:
         return {"error": "Invalid request."}
     
     async def get_user_confirmation(self, sequence):
-        """Simulates user confirmation for execution sequence."""
+        """Asks the user to confirm the execution sequence."""
         print(f"Suggested execution sequence: {sequence}")
         return True  # Assume user confirms for now
     
