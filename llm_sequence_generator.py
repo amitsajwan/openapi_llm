@@ -1,62 +1,92 @@
 import json
-from langchain_openai import AzureChatOpenAI
+import logging
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from langchain_openai import AzureChatOpenAI  # Import Azure Chat OpenAI from langchain_openai
+from openapi_parser import OpenAPIParser
+from api_executor import APIExecutor
+from api_workflow import APIWorkflowManager
+from llm_sequence_generator import LLMSequenceGenerator
 
-class LLMSequenceGenerator:
-    def __init__(self, llm_client: AzureChatOpenAI):
-        self.llm_client = llm_client
+app = FastAPI()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    def determine_intent(self, user_input, openapi_data):
-        """Determines the intent of the user query based on OpenAPI data."""
-        prompt = (
-            f"User Query: {user_input}\n"
-            "Analyze the query based on OpenAPI schema and determine the intent: "
-            "provide_openapi, list_apis, run_sequence, load_test, execute_api, general_query, or modify_execution."
-        )
-        response = self._ask_llm(prompt)
-        return response.lower().strip()
+# Store OpenAPI Spec Data
+openapi_data = None
 
-    def suggest_sequence(self, openapi_data):
-        """Suggests an execution sequence based on the OpenAPI specification."""
-        prompt = (
-            "Analyze the OpenAPI schema and determine the optimal execution order for API endpoints. "
-            "Return the ordered list of API calls with HTTP methods and required parameters in JSON format."
-        )
-        response = self._ask_llm(prompt)
-        return json.loads(response)
+# Initialize Azure OpenAI Client
+llm_client = AzureChatOpenAI(
+    azure_deployment="your-deployment-name",
+    azure_api_key="your-api-key",
+    azure_endpoint="your-endpoint",
+    api_version="2023-03-15-preview"
+)
 
-    def extract_load_test_params(self, user_input):
-        """Extracts the number of users and duration for a load test from user input."""
-        prompt = (
-            f"Extract load test parameters (number of users, duration in seconds) from: '{user_input}'. "
-            "Return a JSON object with 'num_users' and 'duration'."
-        )
-        response = self._ask_llm(prompt)
-        params = json.loads(response)
-        return params.get("num_users", 1), params.get("duration", 60)
+def load_openapi_from_url_or_file(source: str):
+    global openapi_data
+    parser = OpenAPIParser()
+    openapi_data = parser.parse(source)
+    return openapi_data
 
-    def extract_api_details(self, user_input):
-        """Extracts API method and endpoint details from user input."""
-        prompt = (
-            f"Extract the API method (GET, POST, etc.) and endpoint from: '{user_input}'. "
-            "Return a JSON object with 'method' and 'endpoint'."
-        )
-        response = self._ask_llm(prompt)
-        details = json.loads(response)
-        return details.get("method"), details.get("endpoint")
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-    def generate_payload(self, endpoint, openapi_data):
-        """Generates a sample payload based on OpenAPI schema for a given endpoint."""
-        prompt = (
-            f"Generate a sample JSON payload for the API endpoint '{endpoint}' based on OpenAPI schema."
-        )
-        response = self._ask_llm(prompt)
-        return json.loads(response)
+@app.get("/")
+def serve_ui():
+    """Serves the chat UI."""
+    return FileResponse("static/index.html")
 
-    def _ask_llm(self, prompt):
-        """Interacts with Azure OpenAI Chat API to generate responses."""
-        messages = [
-            {"role": "system", "content": "You are an API assistant."},
-            {"role": "user", "content": prompt}
-        ]
-        response = self.llm_client(messages=messages)
-        return response['choices'][0]['message']['content']
+@app.websocket("/chat")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    await websocket.send_text("Welcome! Please provide the OpenAPI (Swagger) URL or upload a spec file.")
+    llm = LLMSequenceGenerator(llm_client)  # Use AzureChatOpenAI
+    
+    while True:
+        user_input = await websocket.receive_text()
+        intent = await llm.determine_intent(user_input, openapi_data)
+        
+        if intent == "provide_openapi":
+            openapi_data = load_openapi_from_url_or_file(user_input)
+            await websocket.send_text("OpenAPI Spec Loaded! You can ask about available APIs or run tests.")
+        
+        elif intent == "list_apis":
+            apis = json.dumps(openapi_data.get_endpoints(), indent=2)
+            await websocket.send_text(f"Available APIs:\n{apis}")
+        
+        elif intent == "run_sequence":
+            sequence = await llm.suggest_sequence(openapi_data)
+            await websocket.send_text(f"Suggested Execution Sequence: {sequence}. Confirm?")
+            confirmation = await websocket.receive_text()
+            if "yes" in confirmation.lower():
+                workflow_manager = APIWorkflowManager(openapi_data, llm_client)
+                result = await workflow_manager.execute_workflow(sequence)
+                await websocket.send_text(f"Execution Results: {result}")
+        
+        elif intent == "load_test":
+            num_users, duration = await llm.extract_load_test_params(user_input)
+            executor = APIExecutor()
+            results = await executor.run_load_test(openapi_data, num_users, duration)
+            await websocket.send_text(f"Load Test Results:\n{results}")
+        
+        elif intent == "general_query":
+            response = openapi_data.answer_query(user_input)
+            await websocket.send_text(response)
+        
+        elif intent == "execute_api":
+            method, endpoint = await llm.extract_api_details(user_input)
+            executor = APIExecutor()
+            payload = await llm.generate_payload(endpoint, openapi_data)
+            result = await executor.execute_api(method, endpoint, payload)
+            await websocket.send_text(f"Execution Result: {result}")
+        
+        elif intent == "modify_execution":
+            await websocket.send_text("Would you like to modify the execution sequence? Provide new order.")
+            new_sequence = await websocket.receive_text()
+            workflow_manager = APIWorkflowManager(openapi_data, llm_client)
+            modified_result = await workflow_manager.execute_workflow(json.loads(new_sequence))
+            await websocket.send_text(f"Modified Execution Results: {modified_result}")
+        
+        else:
+            await websocket.send_text("I didn't understand. Try asking about APIs, running tests, or modifying the execution sequence.")
