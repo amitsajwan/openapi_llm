@@ -6,6 +6,16 @@ from openapi_parser import OpenAPIParser
 from api_executor import APIExecutor
 from api_workflow import APIWorkflowManager
 from llm_sequence_generator import LLMSequenceGenerator
+import os
+from dotenv import load_dotenv
+from langchain_openai import AzureChatOpenAI
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize AzureChatOpenAI
+llm_client = AzureChatOpenAI()
+
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -13,8 +23,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Store OpenAPI Spec Data
 openapi_data = None
 
-# Initialize Azure OpenAI Client
-llm_client = AzureChatOpenAI(deployment_name="your-deployment-name", api_key="your-api-key", api_version="2023-03-15-preview")
+# # Initialize Azure OpenAI Client
+# llm_client = AzureChatOpenAI(deployment_name="your-deployment-name", api_key="your-api-key", api_version="2023-03-15-preview")
 
 
 def load_openapi_from_url_or_file(source: str):
