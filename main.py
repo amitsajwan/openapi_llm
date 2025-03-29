@@ -2,11 +2,30 @@ from fastapi import FastAPI, Form, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_openai import AzureChatOpenAI
-from llm_sequence_generator import LLMSequenceGenerator  # Ensure this is correctly imported
-
+from llm_sequence_generator import LLMSequenceGenerator
+from pydantic import BaseSettings
 import requests
 import json
 import yaml
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Load Azure OpenAI settings from environment variables
+class Settings(BaseSettings):
+    azure_deployment: str
+    api_version: str
+    temperature: float
+    max_tokens: int
+    timeout: int
+    max_retries: int
+
+    class Config:
+        env_file = ".env"  # Load environment variables from .env file
+
+settings = Settings()
 
 # FastAPI app initialization
 app = FastAPI()
@@ -16,12 +35,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialize the LLM (AzureChatOpenAI)
 llm = AzureChatOpenAI(
-    azure_deployment="gpt-35-turbo",  # Use your deployment name
-    api_version="2023-06-01-preview",  # Use your API version
-    temperature=0.5,
-    max_tokens=1000,
-    timeout=30,
-    max_retries=3
+    azure_deployment=settings.azure_deployment,  # Use your deployment name
+    api_version=settings.api_version,  # Use your API version
+    temperature=settings.temperature,
+    max_tokens=settings.max_tokens,
+    timeout=settings.timeout,
+    max_retries=settings.max_retries,
 )
 
 # Initialize LLMSequenceGenerator with AzureChatOpenAI instance
@@ -31,8 +50,8 @@ llm_sequence_generator = LLMSequenceGenerator(llm_client=llm)
 openapi_data = {}
 
 # Route to load OpenAPI from URL or file
-@app.post("/load_openapi")
-async def load_openapi(url: str = Form(None), file: UploadFile = File(None)):
+@app.post("/submit_openapi")
+async def submit_openapi(url: str = Form(None), file: UploadFile = File(None)):
     global openapi_data
 
     # If URL is provided
@@ -83,4 +102,3 @@ async def interact_with_llm(user_input: str):
 @app.get("/")
 async def serve_ui():
     return JSONResponse(content={"message": "UI served. Visit /static/index.html for the app."})
-
