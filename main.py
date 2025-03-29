@@ -1,60 +1,58 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-import uvicorn
-import asyncio
 import json
-from openai import OpenAI
+import logging
+from fastapi import FastAPI, WebSocket
 from openapi_parser import OpenAPIParser
-from api_workflow import APIWorkflowManager
 from api_executor import APIExecutor
+from api_workflow import APIWorkflowManager
 from llm_sequence_generator import LLMSequenceGenerator
-from utils.result_storage import ResultStorage
 
 app = FastAPI()
-openai_client = OpenAI(api_key="your-api-key")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Global Initializations
-openapi_file = "openapi_specs/petstore.yaml"
-base_url = "https://petstore.swagger.io/v2"
-auth_headers = {}
+# Store OpenAPI Spec Data
+openapi_data = None
 
-parser = OpenAPIParser(openapi_file)
-api_map = parser.get_all_endpoints()
-llm_gen = LLMSequenceGenerator()
-api_executor = APIExecutor(base_url, auth_headers)
-workflow_manager = APIWorkflowManager(base_url, auth_headers)
-
-connected_clients = set()
+def load_openapi_from_url_or_file(source: str):
+    global openapi_data
+    parser = OpenAPIParser()
+    openapi_data = parser.parse(source)
+    return openapi_data
 
 @app.websocket("/chat")
-async def chat_ws(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    connected_clients.add(websocket)
-
-    try:
-        await websocket.send_text("👋 Welcome! Ask about the API or say 'run tests' to begin.")
-
-        while True:
-            user_input = await websocket.receive_text()
-            response = await process_user_input(user_input)
-            await websocket.send_text(response)
-
-    except WebSocketDisconnect:
-        connected_clients.remove(websocket)
-
-async def process_user_input(user_input):
-    """Processes user commands via OpenAI and manages API execution."""
-    llm_response = openai_client.chat.create(model="gpt-4", messages=[{"role": "user", "content": user_input}])
-    intent = llm_response["choices"][0]["message"]["content"]
-
-    if "run tests" in intent:
-        sequence = llm_gen.generate_sequence(api_map)
-        return f"Suggested execution order: {sequence}. Confirm? (yes/no)"
-    elif "yes" in intent:
-        return await workflow_manager.execute_workflow(sequence)
-    elif "load test" in intent:
-        return await api_executor.run_load_test(sequence)
+    await websocket.send_text("Welcome! Please provide the OpenAPI (Swagger) URL or upload a spec file.")
     
-    return f"🤖 AI Response: {intent}"
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    while True:
+        user_input = await websocket.receive_text()
+        intent = LLMSequenceGenerator().determine_intent(user_input, openapi_data)
+        
+        if intent == "provide_openapi":
+            openapi_data = load_openapi_from_url_or_file(user_input)
+            await websocket.send_text("OpenAPI Spec Loaded! You can ask about available APIs or run tests.")
+        
+        elif intent == "list_apis":
+            apis = json.dumps(openapi_data.get_endpoints(), indent=2)
+            await websocket.send_text(f"Available APIs:\n{apis}")
+        
+        elif intent == "run_sequence":
+            sequence = LLMSequenceGenerator().suggest_sequence(openapi_data)
+            await websocket.send_text(f"Suggested Execution Sequence: {sequence}. Confirm?")
+            confirmation = await websocket.receive_text()
+            if "yes" in confirmation.lower():
+                workflow_manager = APIWorkflowManager()
+                result = await workflow_manager.execute_workflow(sequence)
+                await websocket.send_text(f"Execution Results: {result}")
+        
+        elif intent == "load_test":
+            num_users, duration = LLMSequenceGenerator().extract_load_test_params(user_input)
+            executor = APIExecutor()
+            results = await executor.run_load_test(openapi_data, num_users, duration)
+            await websocket.send_text(f"Load Test Results:\n{results}")
+        
+        elif intent == "general_query":
+            response = openapi_data.answer_query(user_input)
+            await websocket.send_text(response)
+        
+        else:
+            await websocket.send_text("I didn't understand. Try asking about APIs, running tests, or performing a load test.")
