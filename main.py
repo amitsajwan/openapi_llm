@@ -18,7 +18,8 @@ def load_openapi_from_url_or_file(source: str):
     openapi_data = parser.parse(source)
     return openapi_data
 
-@app.websocket("/chat")\async def websocket_endpoint(websocket: WebSocket):
+@app.websocket("/chat")
+async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     await websocket.send_text("Welcome! Please provide the OpenAPI (Swagger) URL or upload a spec file.")
     
@@ -39,7 +40,7 @@ def load_openapi_from_url_or_file(source: str):
             await websocket.send_text(f"Suggested Execution Sequence: {sequence}. Confirm?")
             confirmation = await websocket.receive_text()
             if "yes" in confirmation.lower():
-                workflow_manager = APIWorkflowManager()
+                workflow_manager = APIWorkflowManager(openapi_data)
                 result = await workflow_manager.execute_workflow(sequence)
                 await websocket.send_text(f"Execution Results: {result}")
         
@@ -56,14 +57,14 @@ def load_openapi_from_url_or_file(source: str):
         elif intent == "execute_api":
             method, endpoint = LLMSequenceGenerator().extract_api_details(user_input)
             executor = APIExecutor()
-            payload = LLMSequenceGenerator().generate_payload(endpoint, openapi_data)  # Ensure payload handling
+            payload = LLMSequenceGenerator().generate_payload(endpoint, openapi_data)
             result = await executor.execute_api(method, endpoint, payload)
             await websocket.send_text(f"Execution Result: {result}")
         
         elif intent == "modify_execution":
             await websocket.send_text("Would you like to modify the execution sequence? Provide new order.")
             new_sequence = await websocket.receive_text()
-            workflow_manager = APIWorkflowManager()
+            workflow_manager = APIWorkflowManager(openapi_data)
             modified_result = await workflow_manager.execute_workflow(json.loads(new_sequence))
             await websocket.send_text(f"Modified Execution Results: {modified_result}")
         
