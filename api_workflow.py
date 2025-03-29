@@ -2,28 +2,24 @@ from langgraph.graph import StateGraph
 from state import ApiExecutionState
 
 class APIWorkflowManager:
-    def __init__(self, base_url, headers):
-        self.base_url = base_url
-        self.headers = headers
+    def __init__(self):
         self.graph = StateGraph(ApiExecutionState)
 
-    def build_workflow(self, api_sequence):
-        for api in api_sequence:
-            method, endpoint = api.split(" ", 1)
-
-            async def node_fn(state, method=method, endpoint=endpoint):
-                result = await state.executor.execute_api(method, endpoint)
-                state.last_api = endpoint
+    def build_workflow(self, sequence):
+        previous = None
+        for step in sequence:
+            async def node_fn(state, step=step):
+                result = await state.executor.execute_api("GET", step)
+                state.last_api = step
                 return state
 
-            self.graph.add_node(endpoint, node_fn)
-
-        for i in range(len(api_sequence) - 1):
-            self.graph.add_edge(api_sequence[i], api_sequence[i + 1])
-
+            self.graph.add_node(step, node_fn)
+            if previous:
+                self.graph.add_edge(previous, step)
+            previous = step
         return self.graph
 
-    async def execute_workflow(self, api_sequence):
-        self.build_workflow(api_sequence)
+    async def execute_workflow(self, sequence):
+        self.build_workflow(sequence)
         state = ApiExecutionState()
         return await self.graph.run(state)
