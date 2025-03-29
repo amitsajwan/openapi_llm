@@ -1,6 +1,6 @@
 import json
 import os
-from fastapi import FastAPI, UploadFile, Form, File, HTTPException
+from fastapi import FastAPI, UploadFile, Form, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langchain_openai import AzureChatOpenAI
@@ -31,10 +31,8 @@ llm_generator = LLMSequenceGenerator(llm)
 
 openapi_data = None  # Store OpenAPI data globally
 
-
 @app.post("/upload_openapi")
 async def upload_openapi(file: UploadFile = File(...)):
-    """Uploads OpenAPI JSON file."""
     global openapi_data
     try:
         openapi_data = json.loads(await file.read())
@@ -42,59 +40,49 @@ async def upload_openapi(file: UploadFile = File(...)):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON format.")
 
-
 @app.post("/upload_openapi_url")
-async def upload_openapi_url(url: str = Form(...)):
-    """Fetches OpenAPI schema from a given URL (To be implemented)."""
+async def upload_openapi_url(payload: dict):
     global openapi_data
     try:
-        # Simulate fetching JSON from URL (replace with real HTTP request)
-        openapi_data = {"mocked": "This would be fetched from the URL"}  
+        url = payload.get("url")
+        if not url:
+            raise HTTPException(status_code=400, detail="URL is required.")
+        # Simulate fetching JSON from URL (replace with real HTTP request in production)
+        openapi_data = {"mocked": "This would be fetched from the URL"}  # Replace with actual fetching logic
         return JSONResponse(content={"message": "OpenAPI schema loaded from URL."})
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @app.post("/determine_intent")
 async def determine_intent(user_input: str = Form(...)):
-    """Determines intent from user input and suggests which API to call."""
     if not openapi_data:
         raise HTTPException(status_code=400, detail="OpenAPI data not uploaded.")
     response = await llm_generator.determine_intent(user_input, openapi_data)
     return JSONResponse(content={"intent": response})
 
-
 @app.post("/suggest_sequence")
 async def suggest_sequence():
-    """Suggests the optimal API execution sequence based on OpenAPI data."""
     if not openapi_data:
         raise HTTPException(status_code=400, detail="OpenAPI data not uploaded.")
     response = await llm_generator.suggest_sequence(openapi_data)
     return JSONResponse(content={"sequence": response})
 
-
 @app.post("/extract_load_test_params")
 async def extract_load_test_params(user_input: str = Form(...)):
-    """Extracts number of users and duration for load testing."""
     response = await llm_generator.extract_load_test_params(user_input)
     return JSONResponse(content={"num_users": response[0], "duration": response[1]})
 
-
 @app.post("/extract_api_details")
 async def extract_api_details(user_input: str = Form(...)):
-    """Extracts HTTP method and endpoint from user input."""
     response = await llm_generator.extract_api_details(user_input)
     return JSONResponse(content={"method": response[0], "endpoint": response[1]})
 
-
 @app.post("/generate_payload")
 async def generate_payload(endpoint: str = Form(...)):
-    """Generates payload for a specific API endpoint."""
     if not openapi_data:
         raise HTTPException(status_code=400, detail="OpenAPI data not uploaded.")
     response = await llm_generator.generate_payload(endpoint, openapi_data)
     return JSONResponse(content={"payload": response})
-
 
 @app.post("/answer_general_query")
 async def answer_general_query(user_input: str = Form(...)):
@@ -102,8 +90,26 @@ async def answer_general_query(user_input: str = Form(...)):
     response = await llm_generator.answer_general_query(user_input)
     return JSONResponse(content={"response": response})
 
+@app.post("/submit_openapi")
+async def submit_openapi(user_input: str = Form(...)):
+    """Handles user queries by determining intent and returning the appropriate response."""
+    if not openapi_data:
+        raise HTTPException(status_code=400, detail="OpenAPI data not uploaded.")
+    intent = await llm_generator.determine_intent(user_input, openapi_data)
+    
+    if intent == "general_query":
+        response = await llm_generator.answer_general_query(user_input)
+    elif intent == "suggest_sequence":
+        response = await llm_generator.suggest_sequence(openapi_data)
+    elif intent == "extract_api_details":
+        response = await llm_generator.extract_api_details(user_input)
+    elif intent == "generate_payload":
+        response = await llm_generator.generate_payload(user_input, openapi_data)
+    else:
+        response = "Sorry, I couldn't understand the request."
+    
+    return JSONResponse(content={"response": response})
 
 @app.get("/")
 async def root():
-    """Root endpoint to confirm API is running."""
     return JSONResponse(content={"message": "API is running. Upload OpenAPI data and interact with LLM."})
