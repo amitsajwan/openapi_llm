@@ -1,44 +1,47 @@
-const websocket = new WebSocket("ws://localhost:8000/chat");
+document.addEventListener("DOMContentLoaded", function () {
+    const submitBtn = document.getElementById("submit");
+    const urlInput = document.getElementById("url_input");
+    const fileInput = document.getElementById("file_input");
 
-websocket.onmessage = function(event) {
-    document.getElementById("chat-log").value += `System: ${event.data}\n`;
-    document.getElementById("chat-log").scrollTop = document.getElementById("chat-log").scrollHeight;
-};
+    submitBtn.addEventListener("click", async function (event) {
+        event.preventDefault();  // Prevent form submission
 
-function sendMessage() {
-    const userInput = document.getElementById("user-input").value;
-    if (userInput) {
-        websocket.send(userInput);
-        document.getElementById("chat-log").value += `You: ${userInput}\n`;
-        document.getElementById("user-input").value = '';
-    }
-}
+        // Get the URL or File input
+        const url = urlInput.value.trim();
+        const file = fileInput.files[0];
 
-function submitOpenAPI() {
-    const swaggerUrl = document.getElementById("swagger-url").value;
-    const fileInput = document.getElementById("swagger-file");
-
-    if (swaggerUrl || fileInput.files.length > 0) {
-        const formData = new FormData();
-        if (swaggerUrl) {
-            formData.append('url_or_file', swaggerUrl);
-        } else {
-            formData.append('url_or_file', fileInput.files[0]);
-        }
-
-        fetch('/load_openapi/', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === "success") {
-                document.getElementById("chat-log").value += "OpenAPI loaded successfully.\n";
-            } else {
-                document.getElementById("chat-log").value += "Failed to load OpenAPI.\n";
+        if (url || file) {
+            const formData = new FormData();
+            if (file) {
+                formData.append("file", file);
             }
-        });
-    } else {
-        alert("Please enter a URL or upload a file.");
-    }
-}
+            if (url) {
+                formData.append("url", url);
+            }
+
+            try {
+                const response = await fetch("/load_openapi", {
+                    method: "POST",
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(data);
+                    if (data.error) {
+                        alert(data.error);
+                    } else {
+                        alert("OpenAPI data loaded successfully!");
+                    }
+                } else {
+                    alert("Failed to load OpenAPI data. Please try again.");
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                alert("An error occurred while processing the request.");
+            }
+        } else {
+            alert("Please provide a Swagger URL or file.");
+        }
+    });
+});
