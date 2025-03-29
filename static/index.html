@@ -1,30 +1,32 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenAPI Interaction</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenAPI Data Upload</title>
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="container">
-        <h1>Welcome to the OpenAPI Interaction Platform</h1>
-        
-        <!-- Form to input Swagger URL or Upload File -->
-        <div class="input-container">
-            <input type="text" id="swagger-url" placeholder="Enter Swagger URL">
-            <input type="file" id="swagger-file" />
-            <button onclick="submitOpenAPI()">Submit</button>
-        </div>
-        
-        <div class="chat-container">
-            <h2>Chat with the system:</h2>
-            <textarea id="chat-log" rows="10" cols="50" readonly></textarea><br>
-            <input type="text" id="user-input" placeholder="Enter command" />
-            <button onclick="sendMessage()">Send</button>
-        </div>
-    </div>
-    
-    <script src="/static/js/chat.js"></script>
+  <div class="container">
+    <h1>Upload OpenAPI Data</h1>
+
+    <form id="openapiForm">
+      <div class="form-group">
+        <label for="url">Enter OpenAPI URL</label>
+        <input type="text" id="url" name="url" placeholder="Enter OpenAPI URL">
+      </div>
+      
+      <div class="form-group">
+        <label for="file">Or Upload OpenAPI File</label>
+        <input type="file" id="file" name="file">
+      </div>
+
+      <button type="submit">Submit</button>
+    </form>
+
+    <div id="message"></div>
+  </div>
+
+  <script src="/static/script.js"></script>
 </body>
 </html>
