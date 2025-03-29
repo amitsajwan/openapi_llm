@@ -18,8 +18,7 @@ def load_openapi_from_url_or_file(source: str):
     openapi_data = parser.parse(source)
     return openapi_data
 
-@app.websocket("/chat")
-async def websocket_endpoint(websocket: WebSocket):
+@app.websocket("/chat")\async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     await websocket.send_text("Welcome! Please provide the OpenAPI (Swagger) URL or upload a spec file.")
     
@@ -54,5 +53,19 @@ async def websocket_endpoint(websocket: WebSocket):
             response = openapi_data.answer_query(user_input)
             await websocket.send_text(response)
         
+        elif intent == "execute_api":
+            method, endpoint = LLMSequenceGenerator().extract_api_details(user_input)
+            executor = APIExecutor()
+            payload = LLMSequenceGenerator().generate_payload(endpoint, openapi_data)  # Ensure payload handling
+            result = await executor.execute_api(method, endpoint, payload)
+            await websocket.send_text(f"Execution Result: {result}")
+        
+        elif intent == "modify_execution":
+            await websocket.send_text("Would you like to modify the execution sequence? Provide new order.")
+            new_sequence = await websocket.receive_text()
+            workflow_manager = APIWorkflowManager()
+            modified_result = await workflow_manager.execute_workflow(json.loads(new_sequence))
+            await websocket.send_text(f"Modified Execution Results: {modified_result}")
+        
         else:
-            await websocket.send_text("I didn't understand. Try asking about APIs, running tests, or performing a load test.")
+            await websocket.send_text("I didn't understand. Try asking about APIs, running tests, or modifying the execution sequence.")
