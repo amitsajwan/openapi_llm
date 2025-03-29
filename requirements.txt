@@ -1,6 +1,10 @@
 fastapi
 uvicorn
+websockets
 openai
-langgraph
-aiohttp
+langchain
+langchain-openai
+pydantic
 pyyaml
+httpx
+requests
