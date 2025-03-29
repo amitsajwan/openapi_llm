@@ -5,80 +5,116 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenAPI Chatbot</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
-        h2 { text-align: center; padding: 20px; background-color: #f4f4f4; }
-        #chatbox { width: 100%; height: 300px; border: 1px solid #ccc; padding: 10px; overflow-y: scroll; margin-bottom: 20px; }
-        input[type="file"], input[type="text"], input[type="url"] { width: 100%; padding: 10px; margin-top: 10px; box-sizing: border-box; }
-        button { padding: 10px; cursor: pointer; background-color: #4CAF50; color: white; border: none; border-radius: 5px; margin-top: 10px; }
-        button:hover { background-color: #45a049; }
-        .chat-container { width: 80%; margin: 20px auto; }
-        .message { margin-bottom: 10px; }
-        .user-message { font-weight: bold; color: #2c3e50; }
-        .bot-message { color: #2980b9; }
-        .error-message { color: red; }
-        #urlInput, #fileInput { margin-top: 15px; }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h2 {
+            text-align: center;
+            color: #333;
+        }
+
+        #chatbox {
+            width: 100%;
+            height: 400px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            overflow-y: scroll;
+            margin-bottom: 20px;
+            background-color: #fff;
+            border-radius: 8px;
+        }
+
+        .message {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 8px;
+            word-wrap: break-word;
+        }
+
+        .user-message {
+            background-color: #e1f5fe;
+            color: #00796b;
+            text-align: left;
+            font-weight: bold;
+        }
+
+        .bot-message {
+            background-color: #f1f1f1;
+            color: #555;
+            text-align: left;
+            font-weight: bold;
+        }
+
+        input[type="file"] {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            margin-top: 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            box-sizing: border-box;
+        }
+
+        button {
+            padding: 12px 20px;
+            cursor: pointer;
+            margin-top: 10px;
+            background-color: #00796b;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+        }
+
+        button:hover {
+            background-color: #004d40;
+        }
+
+        #chatbox p {
+            font-size: 16px;
+        }
     </style>
 </head>
 <body>
 
-<div class="chat-container">
-    <h2>Upload OpenAPI or Enter URL and Chat with the Bot</h2>
+<h2>Upload OpenAPI and Chat with the Bot</h2>
 
-    <!-- URL or File Input Form -->
-    <div id="urlInput">
-        <label for="openapiUrl">Enter OpenAPI URL:</label>
-        <input type="url" id="openapiUrl" placeholder="https://example.com/openapi.json">
-        <button id="submitUrl">Submit URL</button>
-    </div>
-    
-    <div id="fileInput">
-        <form id="openapiForm">
-            <input type="file" id="openapiFile" accept=".json" required>
-            <button type="submit">Upload OpenAPI File</button>
-        </form>
-    </div>
+<!-- Form to upload OpenAPI file -->
+<form id="openapiForm">
+    <label for="openapiFile">Upload OpenAPI File (JSON)</label>
+    <input type="file" id="openapiFile" accept=".json" required>
+    <button type="submit">Upload OpenAPI</button>
+</form>
 
-    <!-- Chatbot Interface -->
-    <div id="chatbox"></div>
-    <input type="text" id="userInput" placeholder="Ask a question or make a request...">
-    <button id="submitInput">Submit</button>
+<!-- URL Input for OpenAPI -->
+<div>
+    <label for="openapiUrl">Or Provide OpenAPI URL</label>
+    <input type="text" id="openapiUrl" placeholder="Enter OpenAPI URL">
+    <button id="submitUrl">Submit URL</button>
 </div>
 
+<!-- Chatbot Interface -->
+<div id="chatbox"></div>
+<input type="text" id="userInput" placeholder="Ask a question or make a request...">
+<button id="submitInput">Submit</button>
+
 <script>
-    // Handle URL input
-    document.getElementById("submitUrl").addEventListener("click", async function() {
-        const urlInput = document.getElementById("openapiUrl").value;
-        if (!urlInput) {
-            alert("Please enter a valid OpenAPI URL.");
-            return;
-        }
-
-        const response = await fetch("/upload_openapi_url", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: urlInput })
-        });
-
-        const result = await response.json();
-        const chatbox = document.getElementById("chatbox");
-        
-        if (response.ok) {
-            chatbox.innerHTML += "<div class='message'><span class='user-message'>You:</span> " + urlInput + "</div>";
-            chatbox.innerHTML += "<div class='message'><span class='bot-message'>Bot:</span> OpenAPI loaded from URL successfully.</div>";
-        } else {
-            chatbox.innerHTML += "<div class='message'><span class='error-message'>Error:</span> " + result.detail + "</div>";
-        }
-
-        chatbox.scrollTop = chatbox.scrollHeight; // Scroll to the bottom of chat
-    });
-
     // Handle file upload
     document.getElementById("openapiForm").addEventListener("submit", async function(event) {
         event.preventDefault();
 
         const fileInput = document.getElementById("openapiFile");
         const file = fileInput.files[0];
-
+        
         if (!file) {
             alert("Please select an OpenAPI file to upload.");
             return;
@@ -94,16 +130,34 @@
         });
 
         const result = await response.json();
-        const chatbox = document.getElementById("chatbox");
-
         if (response.ok) {
-            chatbox.innerHTML += "<div class='message'><span class='user-message'>You:</span> File Uploaded</div>";
-            chatbox.innerHTML += "<div class='message'><span class='bot-message'>Bot:</span> OpenAPI uploaded successfully.</div>";
+            alert("OpenAPI uploaded successfully.");
         } else {
-            chatbox.innerHTML += "<div class='message'><span class='error-message'>Error:</span> " + result.detail + "</div>";
+            alert("Error uploading OpenAPI: " + result.detail);
+        }
+    });
+
+    // Handle URL input submission
+    document.getElementById("submitUrl").addEventListener("click", async function() {
+        const openapiUrl = document.getElementById("openapiUrl").value;
+        
+        if (!openapiUrl) {
+            alert("Please provide a URL.");
+            return;
         }
 
-        chatbox.scrollTop = chatbox.scrollHeight; // Scroll to the bottom of chat
+        const response = await fetch("/upload_openapi_url", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: openapiUrl })
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            alert("OpenAPI URL submitted successfully.");
+        } else {
+            alert("Error: " + result.detail);
+        }
     });
 
     // Handle user input and chat interaction
@@ -124,10 +178,11 @@
         const chatbox = document.getElementById("chatbox");
 
         if (response.ok) {
-            chatbox.innerHTML += "<div class='message'><span class='user-message'>You:</span> " + userInput + "</div>";
-            chatbox.innerHTML += "<div class='message'><span class='bot-message'>Bot:</span> " + result.response + "</div>";
+            chatbox.innerHTML += `<p class="user-message"><b>You:</b> ${userInput}</p>`;
+            chatbox.innerHTML += `<p class="bot-message"><b>Bot:</b> ${result.response}</p>`;
         } else {
-            chatbox.innerHTML += "<div class='message'><span class='error-message'>Error:</span> " + result.detail + "</div>";
+            chatbox.innerHTML += `<p class="user-message"><b>You:</b> ${userInput}</p>`;
+            chatbox.innerHTML += `<p class="bot-message"><b>Error:</b> ${result.detail}</p>`;
         }
 
         chatbox.scrollTop = chatbox.scrollHeight; // Scroll to the bottom of chat
