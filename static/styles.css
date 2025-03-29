@@ -1,27 +1,130 @@
+/* Global Styles */
 body {
-    font-family: Arial, sans-serif;
-    padding: 20px;
+    font-family: 'Arial', sans-serif;
+    background-color: #f4f4f9;
+    margin: 0;
+    padding: 0;
 }
 
 .container {
-    max-width: 800px;
-    margin: 0 auto;
+    width: 80%;
+    margin: 50px auto;
+    background-color: #ffffff;
+    border-radius: 10px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    padding: 30px;
 }
 
+/* Header */
+h1 {
+    text-align: center;
+    color: #333;
+    font-size: 2.5rem;
+    margin-bottom: 30px;
+}
+
+/* Input and Button Styles */
 .input-container {
-    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 30px;
 }
 
-.input-container input, button {
-    padding: 10px;
-    margin-right: 10px;
+.input-container input, .input-container button {
+    padding: 12px;
+    font-size: 1rem;
+    border-radius: 5px;
+    border: 1px solid #ccc;
 }
 
+.input-container input {
+    width: 60%;
+}
+
+.input-container button {
+    background-color: #4CAF50;
+    color: white;
+    cursor: pointer;
+    width: 30%;
+    border: none;
+}
+
+.input-container button:hover {
+    background-color: #45a049;
+}
+
+/* Chat Box Styling */
 .chat-container {
-    margin-top: 20px;
+    margin-top: 30px;
+}
+
+.chat-container h2 {
+    text-align: center;
+    font-size: 1.8rem;
+    color: #333;
+    margin-bottom: 20px;
 }
 
 textarea {
     width: 100%;
-    margin-bottom: 10px;
+    height: 200px;
+    padding: 15px;
+    font-size: 1rem;
+    border-radius: 5px;
+    border: 1px solid #ccc;
+    margin-bottom: 15px;
+    background-color: #f9f9f9;
+    color: #333;
+    resize: none;
+    box-sizing: border-box;
+}
+
+textarea:focus {
+    outline: none;
+    border-color: #4CAF50;
+}
+
+input[type="text"] {
+    width: 80%;
+    padding: 12px;
+    font-size: 1rem;
+    border-radius: 5px;
+    border: 1px solid #ccc;
+    margin-right: 10px;
+}
+
+input[type="text"]:focus {
+    outline: none;
+    border-color: #4CAF50;
+}
+
+button {
+    padding: 12px;
+    background-color: #4CAF50;
+    color: white;
+    font-size: 1rem;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #45a049;
+}
+
+/* Small device adjustments */
+@media (max-width: 768px) {
+    .input-container {
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .input-container input {
+        width: 100%;
+        margin-bottom: 15px;
+    }
+
+    .input-container button {
+        width: 100%;
+    }
 }
