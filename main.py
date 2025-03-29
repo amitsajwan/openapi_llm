@@ -1,79 +1,53 @@
-import json
-import os
-import requests
-import yaml
-from langchain_openai import AzureChatOpenAI
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Form, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-import asyncio
+from langchain_openai import AzureChatOpenAI
+from llm_sequence_generator import LLMSequenceGenerator  # Ensure this is correctly imported
 
-# Load Azure environment variables
-from dotenv import load_dotenv
+import requests
+import json
+import yaml
 
-load_dotenv()  # Ensure .env file is loaded
-
-# Initialize FastAPI app
+# FastAPI app initialization
 app = FastAPI()
 
-# Initialize the AzureChatOpenAI client using environment variables
-llm_client = AzureChatOpenAI(
-    openai_api_key=os.getenv("AZURE_API_KEY"),
-    deployment_name="your_deployment_name",  # Replace with your deployment name
-    endpoint=os.getenv("AZURE_API_ENDPOINT")
+# Mount static files (CSS, JS) for serving
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Initialize the LLM (AzureChatOpenAI)
+llm = AzureChatOpenAI(
+    azure_deployment="gpt-35-turbo",  # Use your deployment name
+    api_version="2023-06-01-preview",  # Use your API version
+    temperature=0.5,
+    max_tokens=1000,
+    timeout=30,
+    max_retries=3
 )
 
-# Initialize LLMSequenceGenerator
-class LLMSequenceGenerator:
-    def __init__(self, llm_client: AzureChatOpenAI):
-        self.llm_client = llm_client
+# Initialize LLMSequenceGenerator with AzureChatOpenAI instance
+llm_sequence_generator = LLMSequenceGenerator(llm_client=llm)
 
-    async def determine_intent(self, user_input: str, openapi_data):
-        """Determines user intent based on input and OpenAPI context."""
-        prompt = f"User input: {user_input}\nOpenAPI Context: {json.dumps(openapi_data, indent=2) if openapi_data else 'No OpenAPI Data'}\nIntent:"
-        response = await self.llm_client.ainvoke(prompt)
-        return response.content.strip()
+# Global variable to hold OpenAPI data
+openapi_data = {}
 
-    async def list_apis(self, openapi_data):
-        """Lists available APIs."""
-        paths = openapi_data.get("paths", {})
-        return [path for path in paths.keys()]
-
-# Load OpenAPI Data from URL or file
-def load_openapi_data(url_or_file):
-    """Load OpenAPI data either from a URL or file."""
-    if url_or_file.startswith("http"):
-        # Fetch OpenAPI data from a URL
-        response = requests.get(url_or_file)
-        response.raise_for_status()
-        return response.json()  # Assuming OpenAPI is in JSON format
-    else:
-        # Load OpenAPI data from a file
-        with open(url_or_file, 'r') as file:
-            return yaml.safe_load(file)  # If the file is in YAML format
-
-# Endpoint to serve the UI
-@app.get("/")
-async def serve_ui():
-    return FileResponse("static/index.html")
-
+# Route to load OpenAPI from URL or file
 @app.post("/load_openapi")
 async def load_openapi(url: str = Form(None), file: UploadFile = File(None)):
     global openapi_data
 
-    # Load OpenAPI data from URL
+    # If URL is provided
     if url:
         try:
             response = requests.get(url)
             if response.status_code == 200:
-                openapi_data = response.json()  # Assuming URL returns JSON
+                openapi_data = response.json()  # Assuming the URL returns JSON
                 return JSONResponse(content={"message": "OpenAPI data loaded from URL."})
             else:
                 raise HTTPException(status_code=400, detail="Unable to fetch data from the provided URL.")
         except requests.exceptions.RequestException as e:
             raise HTTPException(status_code=500, detail="Error fetching data from the URL.")
 
-    # Load OpenAPI data from file
+    # If file is provided
     if file:
         try:
             content = await file.read()
@@ -88,33 +62,25 @@ async def load_openapi(url: str = Form(None), file: UploadFile = File(None)):
         except Exception as e:
             raise HTTPException(status_code=500, detail="Error reading the file.")
 
-# WebSocket for chat interaction
-@app.websocket("/chat")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
+    # If neither URL nor file is provided
+    raise HTTPException(status_code=400, detail="Please provide a Swagger URL or file.")
+
+# Route for the user to interact with LLM (e.g., asking questions, suggesting API sequence)
+@app.post("/interact_with_llm")
+async def interact_with_llm(user_input: str):
+    global openapi_data
+
+    if not openapi_data:
+        raise HTTPException(status_code=400, detail="No OpenAPI data loaded.")
+
     try:
-        # Initialize LLM Sequence Generator
-        llm_generator = LLMSequenceGenerator(llm_client)
-        openapi_data = None
+        intent = await llm_sequence_generator.determine_intent(user_input, openapi_data)
+        return JSONResponse(content={"intent": intent})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        while True:
-            user_input = await websocket.receive_text()
+# Static files serving (index.html)
+@app.get("/")
+async def serve_ui():
+    return JSONResponse(content={"message": "UI served. Visit /static/index.html for the app."})
 
-            if user_input == "List available APIs":
-                if openapi_data:
-                    api_list = await llm_generator.list_apis(openapi_data)
-                    response = f"Available APIs: {', '.join(api_list)}"
-                else:
-                    response = "OpenAPI data is not loaded yet."
-            else:
-                # Determine user intent
-                intent = await llm_generator.determine_intent(user_input, openapi_data)
-                response = f"Intent: {intent}"
-
-            # Send response to user
-            await websocket.send_text(response)
-    except WebSocketDisconnect:
-        print("Client disconnected")
-
-# Serve static files (CSS/JS)
-app.mount("/static", StaticFiles(directory="static"), name="static")
