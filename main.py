@@ -53,3 +53,18 @@ def load_openapi(source: str):
     else:  # If it's a file path, read the OpenAPI spec
         with open(source, 'r') as file:
             return json.load(file)
+
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# Existing FastAPI app and WebSocket code...
+
+# Serve static files (CSS, JS, images)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Serve index.html
+@app.get("/")
+async def serve_index():
+    return FileResponse("index.html")
