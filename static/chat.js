@@ -1,47 +1,34 @@
-document.addEventListener("DOMContentLoaded", function () {
-    const submitBtn = document.getElementById("submit");
-    const urlInput = document.getElementById("url_input");
-    const fileInput = document.getElementById("file_input");
+document.getElementById('openapiForm').addEventListener('submit', async function(event) {
+    event.preventDefault();
 
-    submitBtn.addEventListener("click", async function (event) {
-        event.preventDefault();  // Prevent form submission
+    const url = document.getElementById('url').value;
+    const fileInput = document.getElementById('file');
 
-        // Get the URL or File input
-        const url = urlInput.value.trim();
-        const file = fileInput.files[0];
+    const formData = new FormData();
+    if (url) {
+        formData.append('url', url);
+    }
+    if (fileInput.files.length > 0) {
+        formData.append('file', fileInput.files[0]);
+    }
 
-        if (url || file) {
-            const formData = new FormData();
-            if (file) {
-                formData.append("file", file);
-            }
-            if (url) {
-                formData.append("url", url);
-            }
+    const messageElement = document.getElementById('message');
 
-            try {
-                const response = await fetch("/load_openapi", {
-                    method: "POST",
-                    body: formData
-                });
+    try {
+        const response = await fetch('/submit_openapi', {
+            method: 'POST',
+            body: formData,
+        });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    console.log(data);
-                    if (data.error) {
-                        alert(data.error);
-                    } else {
-                        alert("OpenAPI data loaded successfully!");
-                    }
-                } else {
-                    alert("Failed to load OpenAPI data. Please try again.");
-                }
-            } catch (error) {
-                console.error("Error:", error);
-                alert("An error occurred while processing the request.");
-            }
-        } else {
-            alert("Please provide a Swagger URL or file.");
+        if (!response.ok) {
+            throw new Error('Failed to submit OpenAPI data');
         }
-    });
+
+        const data = await response.json();
+        messageElement.textContent = data.message || 'OpenAPI data loaded successfully!';
+        messageElement.style.color = 'green';
+    } catch (error) {
+        messageElement.textContent = `Error: ${error.message}`;
+        messageElement.style.color = 'red';
+    }
 });
