@@ -18,16 +18,29 @@ openapi_data = None
 # Initialize Azure OpenAI Client
 llm_client = AzureChatOpenAI(deployment_name="your-deployment-name", api_key="your-api-key", api_version="2023-03-15-preview")
 
+import requests
+
 def load_openapi_from_url_or_file(source: str):
     """Loads OpenAPI spec from a URL or file."""
     global openapi_data
     try:
         parser = OpenAPIParser()
-        openapi_data = parser.parse(source)
-        logging.info("OpenAPI Spec Loaded Successfully")
+        
+        # Detect if source is a URL
+        if source.startswith("http"):
+            response = requests.get(source)
+            if response.status_code == 200:
+                openapi_data = parser.parse(response.json())  # Parse JSON response
+            else:
+                logging.error(f"Failed to fetch OpenAPI spec from URL. Status: {response.status_code}")
+                return None
+        else:
+            openapi_data = parser.parse(source)  # Assume it's a file
+        
+        logging.info("✅ OpenAPI Spec Loaded Successfully")
         return openapi_data
     except Exception as e:
-        logging.error(f"Failed to load OpenAPI Spec: {e}")
+        logging.error(f"❌ Failed to load OpenAPI Spec: {e}")
         return None
 
 # Mount static files directory (JS, CSS)
