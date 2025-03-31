@@ -1,70 +1,59 @@
 import json
-from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import AzureChatOpenAI
+from langchain_core.memory import ConversationBufferMemory
 
 class LLMSequenceGenerator:
-    def __init__(self, llm: AzureChatOpenAI):
+    def __init__(self, llm: AzureChatOpenAI, memory: ConversationBufferMemory):
         self.llm = llm
-        self.runnable = RunnablePassthrough()
-
-    async def determine_intent(self, user_input: str, openapi_data: dict = None):
+        self.memory = memory
+    
+    async def determine_intent(self, user_input: str):
         """Determines user intent based on OpenAPI specification."""
-        prompt = (
-            f"Identify intent for user query based on OpenAPI schema.\n"
-            f"Query: {user_input}\n"
-            f"Schema: {json.dumps(openapi_data, indent=2) if openapi_data else 'None'}\n"
-            f"Return only intent as JSON: {{'intent': 'value'}}"
-        )
-        response = await self.llm.ainvoke(prompt)
-        return json.loads(response).get("intent", "unknown")
-
-    async def suggest_sequence(self, openapi_data: dict):
-        """Suggests execution sequence for APIs based on dependencies."""
-        prompt = (
-            f"Analyze the OpenAPI schema and suggest execution order.\n"
-            f"Schema: {json.dumps(openapi_data, indent=2)}\n"
-            f"Return a JSON list of API execution steps."
-        )
-        response = await self.llm.ainvoke(prompt)
-        return json.loads(response)
-
-    async def extract_load_test_params(self, user_input: str):
-        """Extracts load test parameters from user input."""
-        prompt = (
-            f"Extract load test parameters (num_users, duration) from query: {user_input}\n"
-            f"Return JSON: {{'num_users': int, 'duration': int}}"
-        )
-        response = await self.llm.ainvoke(prompt)
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            return {"num_users": None, "duration": None}
-
-    async def extract_api_details(self, user_input: str):
-        """Extracts API method and endpoint from user input."""
-        prompt = (
-            f"Identify API method and endpoint from query: {user_input}\n"
-            f"Return JSON: {{'method': 'GET/POST/etc', 'endpoint': '/example'}}"
-        )
-        response = await self.llm.ainvoke(prompt)
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            return {"method": None, "endpoint": None}
-
-    async def generate_payload(self, endpoint: str, openapi_data: dict):
-        """Generates a payload for a given API endpoint."""
-        prompt = (
-            f"Generate a realistic JSON payload for endpoint {endpoint} using OpenAPI schema.\n"
-            f"Schema: {json.dumps(openapi_data, indent=2)}\n"
-            f"Return only JSON."
-        )
-        response = await self.llm.ainvoke(prompt)
-        return json.loads(response)
-
-    async def answer_general_query(self, user_input: str):
-        """Answers general queries that do not match specific intents."""
-        prompt = f"Answer this general query concisely: {user_input}"
+        prompt = f"Determine the intent of the following user input: {user_input}"
         response = await self.llm.ainvoke(prompt)
         return response.strip()
-        
+    
+    async def suggest_sequence(self, user_input: str):
+        """Suggests an execution sequence for APIs based on dependencies."""
+        prompt = f"Suggest an execution sequence based on: {user_input}"
+        response = await self.llm.ainvoke(prompt)
+        sequence = json.loads(response)
+        self.memory.save_context({"user_input": user_input}, {"sequence": sequence})
+        return sequence
+    
+    async def extract_load_test_params(self, user_input: str):
+        """Extracts load test parameters from user input."""
+        prompt = f"Extract load test parameters (num_users, duration) from: {user_input}"
+        response = await self.llm.ainvoke(prompt)
+        try:
+            params = json.loads(response)
+            self.memory.save_context({"user_input": user_input}, {"params": params})
+            return params
+        except json.JSONDecodeError:
+            return None
+    
+    async def extract_api_details(self, user_input: str):
+        """Extracts API method and endpoint from user input."""
+        prompt = f"Extract API details (method, endpoint) from: {user_input}"
+        response = await self.llm.ainvoke(prompt)
+        try:
+            details = json.loads(response)
+            self.memory.save_context({"user_input": user_input}, {"details": details})
+            return details
+        except json.JSONDecodeError:
+            return None
+    
+    async def generate_payload(self, user_input: str):
+        """Generates a payload for a given API endpoint."""
+        prompt = f"Generate a JSON payload based on: {user_input}"
+        response = await self.llm.ainvoke(prompt)
+        payload = json.loads(response)
+        self.memory.save_context({"user_input": user_input}, {"payload": payload})
+        return payload
+    
+    async def answer_general_query(self, user_input: str):
+        """Answers general queries that do not match specific intents."""
+        prompt = f"Answer the following general query: {user_input}"
+        response = await self.llm.ainvoke(prompt)
+        self.memory.save_context({"user_input": user_input}, {"response": response.strip()})
+        return response.strip()
