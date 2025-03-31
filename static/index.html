@@ -60,6 +60,8 @@
         });
 
         const result = await response.json();
+
+        
         appendMessage("bot", result.response || "Error processing request.");
     }
 
