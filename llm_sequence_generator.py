@@ -1,5 +1,5 @@
 import json
-from langchain.schema.runnable import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import AzureChatOpenAI
 
 class LLMSequenceGenerator:
@@ -15,7 +15,7 @@ class LLMSequenceGenerator:
             f"Schema: {json.dumps(openapi_data, indent=2) if openapi_data else 'None'}\n"
             f"Return only intent as JSON: {{'intent': 'value'}}"
         )
-        response = await self.llm.apredict(prompt)
+        response = await self.llm.ainvoke(prompt)
         return json.loads(response).get("intent", "unknown")
 
     async def suggest_sequence(self, openapi_data: dict):
@@ -25,7 +25,7 @@ class LLMSequenceGenerator:
             f"Schema: {json.dumps(openapi_data, indent=2)}\n"
             f"Return a JSON list of API execution steps."
         )
-        response = await self.llm.apredict(prompt)
+        response = await self.llm.ainvoke(prompt)
         return json.loads(response)
 
     async def extract_load_test_params(self, user_input: str):
@@ -34,7 +34,7 @@ class LLMSequenceGenerator:
             f"Extract load test parameters (num_users, duration) from query: {user_input}\n"
             f"Return JSON: {{'num_users': int, 'duration': int}}"
         )
-        response = await self.llm.apredict(prompt)
+        response = await self.llm.ainvoke(prompt)
         try:
             return json.loads(response)
         except json.JSONDecodeError:
@@ -46,7 +46,7 @@ class LLMSequenceGenerator:
             f"Identify API method and endpoint from query: {user_input}\n"
             f"Return JSON: {{'method': 'GET/POST/etc', 'endpoint': '/example'}}"
         )
-        response = await self.llm.apredict(prompt)
+        response = await self.llm.ainvoke(prompt)
         try:
             return json.loads(response)
         except json.JSONDecodeError:
@@ -59,12 +59,12 @@ class LLMSequenceGenerator:
             f"Schema: {json.dumps(openapi_data, indent=2)}\n"
             f"Return only JSON."
         )
-        response = await self.llm.apredict(prompt)
+        response = await self.llm.ainvoke(prompt)
         return json.loads(response)
 
     async def answer_general_query(self, user_input: str):
         """Answers general queries that do not match specific intents."""
         prompt = f"Answer this general query concisely: {user_input}"
-        response = await self.llm.apredict(prompt)
+        response = await self.llm.ainvoke(prompt)
         return response.strip()
         
