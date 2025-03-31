@@ -6,13 +6,19 @@ class LLMSequenceGenerator:
     def __init__(self, llm: AzureChatOpenAI, memory: ConversationBufferMemory):
         self.llm = llm
         self.memory = memory
-    
     async def determine_intent(self, user_input: str):
-        """Determines user intent based on OpenAPI specification."""
-        prompt = f"Determine the intent of the following user input: {user_input}"
-        response = await self.llm.ainvoke(prompt)
-        return response.strip()
+    """Determines the intent of the user query with memory awareness."""
+    past_messages = self.memory.load_memory_variables({}).get("history", "")
+
+    prompt = f"""
+    Previous Context: {past_messages}
+    User Query: {user_input}
+    Based on previous conversation, determine if the user is continuing a past intent 
+    or switching to a new topic. Return only the intent.
+    """
     
+    return await self.llm.invoke(prompt)
+
     async def suggest_sequence(self, user_input: str):
         """Suggests an execution sequence for APIs based on dependencies."""
         prompt = f"Suggest an execution sequence based on: {user_input}"
