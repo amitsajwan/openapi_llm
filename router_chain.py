@@ -39,19 +39,19 @@ class OpenAPIIntentRouter:
             ),
             "openapi_help": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Extract relevant API details from the OpenAPI spec: {openapi_spec}"),
+                prompt=PromptTemplate.from_template("Provide relevant API details from the OpenAPI spec:\n{openapi_spec}\n\nUser Query: {user_input}"),
             ),
             "generate_payload": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Using the OpenAPI spec, generate a valid JSON payload for {user_input}: {openapi_spec}"),
+                prompt=PromptTemplate.from_template("Generate a valid JSON payload using the OpenAPI spec:\n{openapi_spec}\n\nFor API: {user_input}"),
             ),
             "generate_sequence": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Analyze dependencies and determine the correct API execution sequence using OpenAPI spec: {openapi_spec}"),
+                prompt=PromptTemplate.from_template("Analyze dependencies and determine the correct API execution sequence using the OpenAPI spec:\n{openapi_spec}\n\nFor APIs related to: {user_input}"),
             ),
             "create_workflow": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Design a LangGraph workflow utilizing the API endpoints from the OpenAPI spec: {openapi_spec}"),
+                prompt=PromptTemplate.from_template("Design a LangGraph workflow utilizing the API endpoints from the OpenAPI spec:\n{openapi_spec}"),
             ),
             "execute_workflow": LLMChain(
                 llm=self.llm,
@@ -68,19 +68,21 @@ class OpenAPIIntentRouter:
     def handle_user_input(self, user_input: str):
         """Handles user queries and routes them based on intent."""
         try:
-            classified_intent = self.router_chain.run({
+            classified_intent_response = self.router_chain.router_chain.run({
                 "user_input": user_input,
                 "history": self.memory.load_memory_variables({}).get("history", "")
             })
-            
-            # Ensure proper JSON handling
-            intent_json = json.loads(classified_intent)
+
+            intent_json = json.loads(classified_intent_response.strip())
             intent = intent_json.get("intent", "general_inquiry")
-            
-            # Route based on intent
-            response = self.router_chain.route(intent, {"user_input": user_input, "openapi_spec": self.openapi_spec})
+
+            response = self.router_chain.destination_chains[intent].run({
+                "user_input": user_input,
+                "openapi_spec": self.openapi_spec
+            })
+
             self.memory.save_context({"user_input": user_input}, {"response": response})
-            
+
             return {"intent": intent, "response": response}
         except Exception as e:
             return {"error": f"Error processing request: {str(e)}"}
