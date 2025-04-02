@@ -106,9 +106,13 @@ def handle_user_input(self, user_input: str, history: list = []):
         # Invoke the state graph (RouterState object is returned)
         updated_state = self.graph.invoke(state)
 
-        # ✅ Extract the latest response from history
-        latest_response = updated_state.history[-1]["bot"] if updated_state.history else "No response generated."
+        # ✅ Extract the latest bot response correctly
+        if updated_state.history and isinstance(updated_state.history[-1], dict):
+            latest_response = updated_state.history[-1].get("bot", "No response generated.")
+        else:
+            latest_response = "No response generated."
 
         return {"response": latest_response}
     except Exception as e:
         return {"error": f"Error processing request: {str(e)}"}
+        
