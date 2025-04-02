@@ -65,4 +65,21 @@ class OpenAPIIntentRouter:
             return response
         except Exception as e:
             return {"error": f"Error processing request: {str(e)}"}
+
+
+def prompt_router(input):
+    query_embedding = self.embeddings.embed_query(input["query"])
+    similarity = cosine_similarity([query_embedding], prompt_embeddings)[0]
+    
+    # Find the best-matching template
+    best_match_index = similarity.argmax()
+    best_match_score = similarity[best_match_index]
+    best_match_prompt = intent_templates[best_match_index]
+
+    print(f"Selected Intent: {best_match_prompt}")  # Debugging log
+    print(f"Similarity Scores: {similarity}")  # Debugging log
+
+    return {"prompt": PromptTemplate.from_template(best_match_prompt).format(
+        openapi_spec=self.openapi_spec, query=input["query"]
+    )}
             
