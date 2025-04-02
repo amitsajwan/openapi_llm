@@ -1,73 +1,91 @@
-from langchain.chains import RouterChain, LLMChain
-from langchain_core.memory import ConversationBufferMemory
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from langchain_openai import AzureChatOpenAI
-from langchain.prompts import PromptTemplate
 from langchain.chains.router import MultiRouteChain
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain.memory import ConversationBufferMemory
 import json
 
-class OpenAPIIntentRouter:
-    def __init__(self, llm: AzureChatOpenAI):
-        self.llm = llm
-        self.memory = ConversationBufferMemory(memory_key="history", return_messages=True)
-        self.router_chain = self._initialize_router()
+# FastAPI App
+app = FastAPI()
 
-    def _initialize_router(self):
-        """Initialize the RouterChain with different intents."""
-        intent_prompt = PromptTemplate(
-            template="""
-            Previous Context: {history}
-            User Query: {user_input}
-            Based on the conversation, classify the intent into one of:
-            - general_inquiry
-            - openapi_help
-            - generate_payload
-            - generate_sequence
-            - create_workflow
-            - execute_workflow
-            Return the classification as JSON: {"intent": "intent_name"}
-            """,
-            input_variables=["history", "user_input"]
-        )
-        
-        intent_chain = LLMChain(llm=self.llm, prompt=intent_prompt, memory=self.memory)
+# Initialize LLM
+llm = AzureChatOpenAI(deployment_name="your-deployment-name")
 
-        routes = {
-            "general_inquiry": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Answer this user query: {user_input}"),
-            ),
-            "openapi_help": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Provide API details based on OpenAPI spec for: {user_input}"),
-            ),
-            "generate_payload": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Generate a JSON payload for: {user_input}"),
-            ),
-            "generate_sequence": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Determine API execution sequence based on: {user_input}"),
-            ),
-            "create_workflow": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Create a LangGraph workflow for: {user_input}"),
-            ),
-            "execute_workflow": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Execute the workflow now."),
-            ),
-        }
+# Initialize Memory
+memory = ConversationBufferMemory(memory_key="history", return_messages=True)
 
-        return RouterChain(intent_chain, routes)
+# Intent Classification Prompt
+intent_prompt = PromptTemplate(
+    template="""
+    Previous Context: {history}
+    User Query: {user_input}
+    Based on the conversation, classify the intent into one of:
+    - general_inquiry
+    - openapi_help
+    - generate_payload
+    - generate_sequence
+    - create_workflow
+    - execute_workflow
+    Return the classification as JSON: {"intent": "intent_name"}
+    """,
+    input_variables=["history", "user_input"]
+)
 
-    async def handle_user_input(self, user_input: str):
-        """Processes user input and routes it to the appropriate chain."""
-        classified_intent = await self.router_chain.run({"user_input": user_input, "history": self.memory.load_memory_variables({}).get("history", "")})
-        
+# Intent Chain
+intent_chain = LLMChain(llm=llm, prompt=intent_prompt, memory=memory)
+
+# Route Chains
+routes = {
+    "general_inquiry": LLMChain(
+        llm=llm,
+        prompt=PromptTemplate.from_template("Answer this user query: {user_input}"),
+    ),
+    "openapi_help": LLMChain(
+        llm=llm,
+        prompt=PromptTemplate.from_template("Provide API details based on OpenAPI spec for: {user_input}"),
+    ),
+    "generate_payload": LLMChain(
+        llm=llm,
+        prompt=PromptTemplate.from_template("Generate a JSON payload for: {user_input}"),
+    ),
+    "generate_sequence": LLMChain(
+        llm=llm,
+        prompt=PromptTemplate.from_template("Determine API execution sequence based on: {user_input}"),
+    ),
+    "create_workflow": LLMChain(
+        llm=llm,
+        prompt=PromptTemplate.from_template("Create a LangGraph workflow for: {user_input}"),
+    ),
+    "execute_workflow": LLMChain(
+        llm=llm,
+        prompt=PromptTemplate.from_template("Execute the workflow now."),
+    ),
+}
+
+# MultiRouteChain
+router_chain = MultiRouteChain(router_chain=intent_chain, destination_chains=routes, default_chain=routes["general_inquiry"])
+
+# Pydantic Request Model
+class UserQuery(BaseModel):
+    user_input: str
+    openapi_spec: dict  # Add OpenAPI spec as part of the request
+
+@app.post("/submit_openapi")
+async def handle_request(query: UserQuery):
+    """Handles user queries and routes them based on intent."""
+    try:
+        classified_intent = await router_chain.arun({
+            "user_input": query.user_input,
+            "history": memory.load_memory_variables({}).get("history", "")
+        })
         intent_json = json.loads(classified_intent)
         intent = intent_json.get("intent", "general_inquiry")
         
-        response = await self.router_chain.route(intent, {"user_input": user_input})
-        self.memory.save_context({"user_input": user_input}, {"response": response})
+        response = await router_chain.run_chain(intent, {"user_input": query.user_input})
+        memory.save_context({"user_input": query.user_input}, {"response": response})
         
-        return response
+        return {"response": response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
