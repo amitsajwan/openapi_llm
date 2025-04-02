@@ -116,3 +116,27 @@ def handle_user_input(self, user_input: str, history: list = []):
     except Exception as e:
         return {"error": f"Error processing request: {str(e)}"}
         
+def handle_user_input(self, user_input: str, history: list = []):
+    """Handles user queries and routes them based on intent."""
+    try:
+        # Initialize state with user input & history
+        state = RouterState(query=user_input, history=history)
+
+        # 🚀 If graph.invoke is async, ensure it's awaited
+        if callable(getattr(self.graph, "ainvoke", None)):
+            updated_state = await self.graph.ainvoke(state)
+        else:
+            updated_state = self.graph.invoke(state)
+
+        # ✅ Ensure `history` is a list
+        if not isinstance(updated_state.history, list):
+            return {"error": "Invalid response format from state graph."}
+
+        # ✅ Extract the latest bot response safely
+        latest_entry = updated_state.history[-1] if updated_state.history else {}
+        latest_response = latest_entry.get("bot", "No response generated.")
+
+        return {"response": latest_response}
+    except Exception as e:
+        return {"error": f"Error processing request: {str(e)}"}
+        
