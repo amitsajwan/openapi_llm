@@ -35,7 +35,7 @@ class OpenAPIIntentRouter:
             "general_inquiry": (PromptTemplate.from_template("Provide a response based on the user query: {user_input}") | self.llm),
             "openapi_help": (PromptTemplate.from_template("Extract relevant API details from OpenAPI spec:\n{openapi_spec}\n\nQuery: {user_input}") | self.llm),
             "generate_payload": (PromptTemplate.from_template("Generate a structured JSON payload using OpenAPI spec:\n{openapi_spec}\n\nTarget API: {user_input}") | self.llm),
-            "generate_sequence": (PromptTemplate.from_template("Determine the correct API execution order using OpenAPI spec:\n{openapi_spec}\n\nContext: {user_input}") | self.llm),
+            "generate_sequence": (PromptTemplate.from_template("Determine the correct API execution order using OpenAPI spec:\n{openapi_spec}") | self.llm),
             "create_workflow": (PromptTemplate.from_template("Construct a LangGraph workflow based on API endpoints from OpenAPI spec:\n{openapi_spec}") | self.llm),
             "execute_workflow": (PromptTemplate.from_template("Execute the predefined API workflow.") | self.llm),
         }
@@ -54,16 +54,19 @@ class OpenAPIIntentRouter:
                 "history": self.memory.load_memory_variables({}).get("history", "")
             })
 
-            intent_json = json.loads(classified_intent_response.strip())
+            if isinstance(classified_intent_response, dict):
+                intent_json = classified_intent_response
+            else:
+                intent_json = json.loads(classified_intent_response.strip())
+
             intent = intent_json.get("intent", "general_inquiry")
 
             response = self.router_chain.invoke({
-                "destination": intent,
                 "input": {
                     "user_input": user_input,
                     "openapi_spec": self.openapi_spec
                 }
-            })
+            }, config={"destination": intent})
 
             self.memory.save_context({"user_input": user_input}, {"response": response})
 
