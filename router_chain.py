@@ -5,12 +5,6 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_community.utils.math import cosine_similarity
 from langchain.memory import ConversationBufferMemory
 import json
-from pydantic import BaseModel
-
-class RouterState(BaseModel):
-    query: str
-    intent: str = ""
-    response: str = ""
 
 class OpenAPIIntentRouter:
     def __init__(self, llm: AzureChatOpenAI, openapi_spec: dict, azure_api_key: str, azure_deployment_name: str):
@@ -42,15 +36,23 @@ class OpenAPIIntentRouter:
 
         prompt_embeddings = self.embeddings.embed_documents(intent_templates)
 
-        def prompt_router(state: RouterState):
-            query_embedding = self.embeddings.embed_query(state.query)
+        def prompt_router(input):
+            query_embedding = self.embeddings.embed_query(input["query"])
             similarity = cosine_similarity([query_embedding], prompt_embeddings)[0]
             most_similar = intent_templates[similarity.argmax()]
-            return PromptTemplate.from_template(most_similar).format(openapi_spec=self.openapi_spec, query=state.query)
+            return {"prompt": PromptTemplate.from_template(most_similar).format(openapi_spec=self.openapi_spec, query=input["query"])}
 
-        graph = StateGraph(RouterState, config_schema=None)
+        def generate_response(input):
+            """Ensure the response is in JSON format."""
+            response = self.llm.invoke(input["prompt"])
+            try:
+                return json.loads(response)  # Ensure output is a dictionary
+            except json.JSONDecodeError:
+                return {"response": response}  # Fallback if not JSON
+
+        graph = StateGraph()
         graph.add_node("classify_intent", RunnableLambda(prompt_router))
-        graph.add_node("generate_response", self.llm)
+        graph.add_node("generate_response", RunnableLambda(generate_response))
         graph.set_entry_point("classify_intent")
         graph.add_edge("classify_intent", "generate_response")
         return graph.compile()
@@ -58,9 +60,9 @@ class OpenAPIIntentRouter:
     def handle_user_input(self, user_input: str):
         """Handles user queries and routes them based on intent."""
         try:
-            state = RouterState(query=user_input)
-            response = self.graph.invoke(state)
-            self.memory.save_context({"user_input": user_input}, {"response": response.response})
-            return {"response": response.response}
+            response = self.graph.invoke({"query": user_input})
+            self.memory.save_context({"user_input": user_input}, response)
+            return response
         except Exception as e:
             return {"error": f"Error processing request: {str(e)}"}
+            
