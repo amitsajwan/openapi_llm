@@ -1,8 +1,9 @@
-from langchain_openai import AzureChatOpenAI
+from langchain_openai import AzureChatOpenAI, OpenAIEmbeddings
 from langchain.chains.router import MultiRouteChain
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
-from langchain.schema import RunnableLambda
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_community.utils.math import cosine_similarity
 import json
 
 class OpenAPIIntentRouter:
@@ -10,60 +11,57 @@ class OpenAPIIntentRouter:
         self.llm = llm
         self.openapi_spec = openapi_spec
         self.memory = ConversationBufferMemory(memory_key="history", return_messages=True)
+        self.embeddings = OpenAIEmbeddings()
         self.router_chain = self._initialize_router()
 
     def _initialize_router(self):
         """Initialize the MultiRouteChain with different intents."""
-        intent_prompt = PromptTemplate(
-            template="""
-            Previous Context: {history}
-            User Query: {user_input}
-            Based on the conversation, classify the intent into one of:
+        intent_templates = [
+            """Classify intent based on conversation:
             - general_inquiry
             - openapi_help
             - generate_payload
             - generate_sequence
             - create_workflow
             - execute_workflow
-            Return the classification as JSON: {"intent": "intent_name"}
-            """,
-            input_variables=["history", "user_input"]
-        )
+            Return JSON: {"intent": "intent_name"}.
+            
+            Query: {query}""",
+            """Extract API details from OpenAPI spec: {openapi_spec}\n\nQuery: {query}""",
+            """Generate a structured JSON payload using OpenAPI spec: {openapi_spec}\n\nTarget API: {query}""",
+            """Determine correct API execution order using OpenAPI spec: {openapi_spec}""",
+            """Construct a LangGraph workflow from OpenAPI spec: {openapi_spec}""",
+            """Execute the predefined API workflow."""
+        ]
 
-        intent_chain = intent_prompt | self.llm
+        intent_embeddings = self.embeddings.embed_documents(intent_templates)
 
-        routes = {
-            "general_inquiry": intent_prompt | self.llm,
-            "openapi_help": PromptTemplate.from_template("Extract relevant API details from OpenAPI spec: {openapi_spec}\n\nQuery: {user_input}") | self.llm,
-            "generate_payload": PromptTemplate.from_template("Generate a structured JSON payload using OpenAPI spec: {openapi_spec}\n\nTarget API: {user_input}") | self.llm,
-            "generate_sequence": PromptTemplate.from_template("Determine the correct API execution order using OpenAPI spec: {openapi_spec}") | self.llm,
-            "create_workflow": PromptTemplate.from_template("Construct a LangGraph workflow based on API endpoints from OpenAPI spec: {openapi_spec}") | self.llm,
-            "execute_workflow": PromptTemplate.from_template("Execute the predefined API workflow.") | self.llm,
-        }
+        def route_intent(input):
+            query_embedding = self.embeddings.embed_query(input["query"])
+            similarity = cosine_similarity([query_embedding], intent_embeddings)[0]
+            best_match = intent_templates[similarity.argmax()]
+            return PromptTemplate.from_template(best_match)
 
         return MultiRouteChain(
-            router_chain=RunnableLambda(lambda x: json.loads(intent_chain.invoke(x).strip())),
-            destination_chains=routes,
-            default_chain=routes["general_inquiry"],
+            router_chain=RunnableLambda(route_intent),
+            destination_chains={
+                "general_inquiry": RunnableLambda(lambda x: self.llm.invoke(x["query"])),
+                "openapi_help": RunnableLambda(lambda x: self.llm.invoke(x["query"])),
+                "generate_payload": RunnableLambda(lambda x: self.llm.invoke(x["query"])),
+                "generate_sequence": RunnableLambda(lambda x: self.llm.invoke(x["query"])),
+                "create_workflow": RunnableLambda(lambda x: self.llm.invoke(x["query"])),
+                "execute_workflow": RunnableLambda(lambda x: self.llm.invoke(x["query"]))
+            },
+            default_chain=RunnableLambda(lambda x: self.llm.invoke(x["query"]))
         )
 
     def handle_user_input(self, user_input: str):
         """Handles user queries and routes them based on intent."""
         try:
-            classified_intent_response = self.router_chain.router_chain.invoke({
-                "user_input": user_input,
-                "history": self.memory.load_memory_variables({}).get("history", "")
-            })
-
-            intent = classified_intent_response.get("intent", "general_inquiry")
-
-            response = self.router_chain.invoke({
-                "user_input": user_input,
-                "openapi_spec": self.openapi_spec
-            }, config={"destination": intent})
-
+            intent_response = self.router_chain.router_chain.invoke({"query": user_input})
+            response = self.router_chain.invoke({"query": user_input, "openapi_spec": self.openapi_spec}, config={"destination": intent_response})
             self.memory.save_context({"user_input": user_input}, {"response": response})
-
-            return {"intent": intent, "response": response}
+            return {"intent": intent_response, "response": response}
         except Exception as e:
             return {"error": f"Error processing request: {str(e)}"}
+            
