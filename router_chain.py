@@ -1,6 +1,5 @@
 from langchain_openai import AzureChatOpenAI
 from langchain.chains.router import MultiRouteChain
-from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 import json
@@ -30,43 +29,15 @@ class OpenAPIIntentRouter:
             input_variables=["history", "user_input"]
         )
 
-        intent_chain = LLMChain(llm=self.llm, prompt=intent_prompt, memory=self.memory)
+        intent_chain = intent_prompt | self.llm
 
         routes = {
-            "general_inquiry": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Provide a response based on the user query: {user_input}"),
-            ),
-            "openapi_help": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Extract relevant API details from OpenAPI spec:
-{openapi_spec}
-
-Query: {user_input}"),
-            ),
-            "generate_payload": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Generate a structured JSON payload using OpenAPI spec:
-{openapi_spec}
-
-Target API: {user_input}"),
-            ),
-            "generate_sequence": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Determine the correct API execution order using OpenAPI spec:
-{openapi_spec}
-
-Context: {user_input}"),
-            ),
-            "create_workflow": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Construct a LangGraph workflow based on API endpoints from OpenAPI spec:
-{openapi_spec}"),
-            ),
-            "execute_workflow": LLMChain(
-                llm=self.llm,
-                prompt=PromptTemplate.from_template("Execute the predefined API workflow."),
-            ),
+            "general_inquiry": PromptTemplate.from_template("Provide a response based on the user query: {user_input}") | self.llm,
+            "openapi_help": PromptTemplate.from_template("Extract relevant API details from OpenAPI spec:\n{openapi_spec}\n\nQuery: {user_input}") | self.llm,
+            "generate_payload": PromptTemplate.from_template("Generate a structured JSON payload using OpenAPI spec:\n{openapi_spec}\n\nTarget API: {user_input}") | self.llm,
+            "generate_sequence": PromptTemplate.from_template("Determine the correct API execution order using OpenAPI spec:\n{openapi_spec}\n\nContext: {user_input}") | self.llm,
+            "create_workflow": PromptTemplate.from_template("Construct a LangGraph workflow based on API endpoints from OpenAPI spec:\n{openapi_spec}") | self.llm,
+            "execute_workflow": PromptTemplate.from_template("Execute the predefined API workflow.") | self.llm,
         }
 
         return MultiRouteChain(
