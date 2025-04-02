@@ -96,3 +96,19 @@ class OpenAPIIntentRouter:
         except Exception as e:
             return {"error": f"Error processing request: {str(e)}"}
 
+
+def handle_user_input(self, user_input: str, history: list = []):
+    """Handles user queries and routes them based on intent."""
+    try:
+        # Initialize state with user input & history
+        state = RouterState(query=user_input, history=history)
+
+        # Invoke the state graph (RouterState object is returned)
+        updated_state = self.graph.invoke(state)
+
+        # ✅ Extract the latest response from history
+        latest_response = updated_state.history[-1]["bot"] if updated_state.history else "No response generated."
+
+        return {"response": latest_response}
+    except Exception as e:
+        return {"error": f"Error processing request: {str(e)}"}
