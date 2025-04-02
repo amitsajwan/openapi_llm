@@ -35,27 +35,37 @@ class OpenAPIIntentRouter:
         routes = {
             "general_inquiry": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Answer the following user query: {user_input}"),
+                prompt=PromptTemplate.from_template("Provide a response based on the user query: {user_input}"),
             ),
             "openapi_help": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Provide relevant API details from the OpenAPI spec:\n{openapi_spec}\n\nUser Query: {user_input}"),
+                prompt=PromptTemplate.from_template("Extract relevant API details from OpenAPI spec:
+{openapi_spec}
+
+Query: {user_input}"),
             ),
             "generate_payload": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Generate a valid JSON payload using the OpenAPI spec:\n{openapi_spec}\n\nFor API: {user_input}"),
+                prompt=PromptTemplate.from_template("Generate a structured JSON payload using OpenAPI spec:
+{openapi_spec}
+
+Target API: {user_input}"),
             ),
             "generate_sequence": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Analyze dependencies and determine the correct API execution sequence using the OpenAPI spec:\n{openapi_spec}\n\nFor APIs related to: {user_input}"),
+                prompt=PromptTemplate.from_template("Determine the correct API execution order using OpenAPI spec:
+{openapi_spec}
+
+Context: {user_input}"),
             ),
             "create_workflow": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Design a LangGraph workflow utilizing the API endpoints from the OpenAPI spec:\n{openapi_spec}"),
+                prompt=PromptTemplate.from_template("Construct a LangGraph workflow based on API endpoints from OpenAPI spec:
+{openapi_spec}"),
             ),
             "execute_workflow": LLMChain(
                 llm=self.llm,
-                prompt=PromptTemplate.from_template("Initiate and execute the predefined workflow."),
+                prompt=PromptTemplate.from_template("Execute the predefined API workflow."),
             ),
         }
 
@@ -68,7 +78,7 @@ class OpenAPIIntentRouter:
     def handle_user_input(self, user_input: str):
         """Handles user queries and routes them based on intent."""
         try:
-            classified_intent_response = self.router_chain.router_chain.run({
+            classified_intent_response = self.router_chain.router_chain.invoke({
                 "user_input": user_input,
                 "history": self.memory.load_memory_variables({}).get("history", "")
             })
@@ -76,7 +86,7 @@ class OpenAPIIntentRouter:
             intent_json = json.loads(classified_intent_response.strip())
             intent = intent_json.get("intent", "general_inquiry")
 
-            response = self.router_chain.destination_chains[intent].run({
+            response = self.router_chain.destination_chains[intent].invoke({
                 "user_input": user_input,
                 "openapi_spec": self.openapi_spec
             })
