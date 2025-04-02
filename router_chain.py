@@ -139,4 +139,25 @@ def handle_user_input(self, user_input: str, history: list = []):
         return {"response": latest_response}
     except Exception as e:
         return {"error": f"Error processing request: {str(e)}"}
+  def handle_user_input(self, user_input: str, history: list = []):
+    """Handles user queries and routes them based on intent."""
+    try:
+        # 🚀 Ensure correct input format
+        state = {"query": user_input, "history": history}
+
+        # 🔄 Handle async or sync execution
+        if callable(getattr(self.graph, "ainvoke", None)):
+            updated_state = await self.graph.ainvoke(state)
+        else:
+            updated_state = self.graph.invoke(state)
+
+        # ✅ Access history safely
+        history = updated_state["history"] if "history" in updated_state else []
+        
+        # ✅ Get latest bot response safely
+        latest_response = history[-1]["bot"] if history else "No response generated."
+
+        return {"response": latest_response}
+    except Exception as e:
+        return {"error": f"Error processing request: {str(e)}"}
         
