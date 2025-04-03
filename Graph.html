@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Execution Graph</title>
+    <script type="module">
+        import mermaid from 'https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.0.2/mermaid.esm.min.mjs';
+
+        const socket = new WebSocket("ws://localhost:8000/ws");
+
+        socket.onmessage = (event) => {
+            const graphData = event.data;
+            document.getElementById("mermaid-diagram").innerHTML = '```mermaid\n' + graphData + '\n```';
+            mermaid.init(undefined, ".mermaid");
+        };
+    </script>
+</head>
+<body>
+    <h2>API Execution Workflow</h2>
+    <div class="mermaid" id="mermaid-diagram"></div>
+</body>
+</html>
