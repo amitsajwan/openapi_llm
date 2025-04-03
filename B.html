@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Mermaid Graph</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.0.2/mermaid.min.js"></script>
+</head>
+<body>
+    <h2>Live Mermaid Graph</h2>
+    <div id="mermaid-container" class="mermaid">Loading...</div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            mermaid.initialize({ startOnLoad: false });
+
+            const socket = new WebSocket("ws://localhost:8000");
+
+            socket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+
+                if (message.type === "mermaid_graph") {
+                    console.log("Received Mermaid Data:", message.data);
+
+                    const container = document.getElementById("mermaid-container");
+                    container.innerHTML = `<div class="mermaid">${message.data}</div>`;
+
+                    // Ensure Mermaid updates the new diagram
+                    setTimeout(() => {
+                        mermaid.init(undefined, ".mermaid");
+                    }, 100);
+                }
+            };
+        });
+    </script>
+</body>
+</html>
