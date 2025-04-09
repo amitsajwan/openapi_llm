@@ -67,13 +67,13 @@ def extract_variables_from_response(response: dict) -> dict:
 # --------------------
 # Terminal nodes finder
 # --------------------
+
+# 
 def find_terminal_nodes(graph: dict) -> list:
-    all_from = {e["from"] for e in graph["edges"]}
-    all_to = {e["to"] for e in graph["edges"]}
-    return list(all_from - all_to)  # nodes that don't feed into others
-
-
-# --------------------
+    all_nodes = {node["name"] for node in graph["nodes"]}
+    from_nodes = {e["from"] for e in graph["edges"]}
+    return list(all_nodes - from_nodes)  # nodes that have no outgoing edges
+------------------
 # Dynamic LangGraph Builder
 # --------------------
 def build_api_graph(graph_json: dict) -> StateGraph:
