@@ -1,150 +1,182 @@
-import asyncio
-import httpx
-import re
-from typing import Dict, Any, List
-
-from langgraph.graph import StateGraph, END
-from langchain_core.runnables import RunnableLambda
-from pydantic import BaseModel, Field
-
-
-class GraphState(BaseModel):
-    first_run: bool = True
-    confirmed: Dict[str, bool] = Field(default_factory=dict)
-    payloads: Dict[str, Any] = Field(default_factory=dict)
-    results: Dict[str, Any] = Field(default_factory=dict)
-    variables: Dict[str, Any] = Field(default_factory=dict)
-    base_url: str = "http://localhost:8000"
-    headers: Dict[str, str] = Field(default_factory=lambda: {"Content-Type": "application/json"})
-
+import json
+from typing import Any, Dict, Callable, List
+from langgraph.graph import StateGraph
 
 class LanggraphWorkflow:
-    def __init__(self, graph_json: Dict[str, Any], base_url: str = "http://localhost:8000"):
-        self.graph_json = graph_json
-        self.node_configs = {node["id"]: node for node in graph_json["nodes"]}
-        self.base_url = base_url
-        self.entry_nodes = self._find_entry_nodes()
-        self.terminal_nodes = self._find_terminal_nodes()
-        self.graph = self._build_graph()
+    def __init__(self, graph_def: Dict[str, Any], websocket, llm_refiner: Callable):
+        self.graph_def = graph_def
+        self.websocket = websocket
+        self.llm_refiner = llm_refiner
+        self.state_graph = None
 
-    def _find_entry_nodes(self) -> List[str]:
-        sources = {edge["source"] for edge in self.graph_json["edges"]}
-        targets = {edge["target"] for edge in self.graph_json["edges"]}
-        return list(sources - targets) or [list(self.node_configs.keys())[0]]
+    def extract_terminal_nodes(self) -> List[str]:
+        target_ids = {edge['target'] for edge in self.graph_def['edges']}
+        source_ids = {edge['source'] for edge in self.graph_def['edges']}
+        return list(target_ids - source_ids)
 
-    def _find_terminal_nodes(self) -> List[str]:
-        sources = {edge["source"] for edge in self.graph_json["edges"]}
-        targets = {edge["target"] for edge in self.graph_json["edges"]}
-        return list(targets - sources)
+    def extract_entry_nodes(self) -> List[str]:
+        target_ids = {edge['target'] for edge in self.graph_def['edges']}
+        source_ids = {edge['source'] for edge in self.graph_def['edges']}
+        return list(source_ids - target_ids)
 
-    def _extract_path_variables(self, path: str) -> List[str]:
-        return re.findall(r"{(.*?)}", path)
+    def build_graph(self):
+        from langgraph.graph import StateGraph
+        from langchain_core.runnables import RunnableLambda
 
-    def _resolve_path_variables(self, path: str, variables: Dict[str, Any]) -> str:
-        for var in self._extract_path_variables(path):
-            if var not in variables:
-                raise ValueError(f"Missing variable '{var}' for path: {path}")
-            path = path.replace(f"{{{var}}}", str(variables[var]))
-        return path
+        graph = StateGraph(state_schema=dict)
+        node_map = {}
 
-    async def _get_payload_for_endpoint(self, endpoint_id: str) -> Dict[str, Any]:
-        # Replace with your actual payload generator
-        return {"sample": f"generated_for_{endpoint_id}"}
+        for node in self.graph_def['nodes']:
+            node_id = node['id']
+            node_map[node_id] = RunnableLambda(self.make_node_runner(node))
+            graph.add_node(node_id, node_map[node_id])
 
-    def _build_node_fn(self, config: Dict[str, Any]):
-        async def _node_fn(state: GraphState) -> GraphState:
-            method = config["method"].upper()
-            endpoint = config["endpoint"]
-            node_id = config["id"]
+        for edge in self.graph_def['edges']:
+            graph.add_edge(edge['source'], edge['target'])
 
-            try:
-                url = self._resolve_path_variables(endpoint, state.variables)
-            except ValueError as e:
-                print(f"[{node_id}] Error: {e}")
-                return state
+        entry_nodes = self.extract_entry_nodes()
+        if entry_nodes:
+            graph.set_entry_point(entry_nodes[0])  # Assuming single entry
 
-            full_url = state.base_url + url
-            payload = {}
+        terminal_nodes = self.extract_terminal_nodes()
+        for t in terminal_nodes:
+            graph.set_finish_point(t)
 
-            if method in ["POST", "PUT"]:
-                if state.first_run and not state.confirmed.get(node_id):
-                    payload = await self._get_payload_for_endpoint(node_id)
-                    return state.copy(update={
-                        "action": "confirm_payload",
-                        "target_node": node_id,
-                        "payload": payload
-                    })
-                payload = state.payloads.get(node_id, await self._get_payload_for_endpoint(node_id))
+        self.state_graph = graph.compile()
 
-            async with httpx.AsyncClient() as client:
-                response = await client.request(
-                    method,
-                    full_url,
-                    headers=state.headers,
-                    json=payload if method in ["POST", "PUT"] else None
-                )
+    def make_node_runner(self, node):
+        async def run_node(state: Dict[str, Any]):
+            method = node['method']
+            operation_id = node['operation_id']
+            endpoint = node['endpoint']
 
-            try:
-                data = response.json()
-            except Exception:
-                data = {"error": response.text}
+            payload = await self.generate_payload(method, operation_id, endpoint)
 
-            new_vars = {**state.variables}
-            if isinstance(data, dict) and "id" in data:
-                new_vars["id"] = data["id"]
-
-            return state.copy(update={
-                "results": {**state.results, node_id: data},
-                "variables": new_vars
+            await self.websocket.send_json({
+                "type": "executing_api",
+                "message": f"Executing {method.upper()} {endpoint} ({operation_id})",
+                "method": method,
+                "endpoint": endpoint,
+                "operation_id": operation_id,
+                "payload": payload,
             })
 
-        return RunnableLambda(_node_fn)
+            # Simulated response
+            result = {"id": "123", "status": "success", "data": {"example": True}}
 
-    def _build_graph(self):
-        sg = StateGraph(state_schema=GraphState)
+            await self.websocket.send_json({
+                "type": "api_response",
+                "message": f"Executed {method.upper()} {endpoint}. Response: {json.dumps(result)}",
+                "operation_id": operation_id,
+                "response": result
+            })
 
-        # Add all nodes
-        for node_id, config in self.node_configs.items():
-            sg.add_node(node_id, self._build_node_fn(config))
+            return {**state, operation_id: result}
 
-        # Add edges
-        for edge in self.graph_json["edges"]:
-            sg.add_edge(edge["source"], edge["target"])
+        return run_node
 
-        # Add END to terminal nodes
-        for terminal in self.terminal_nodes:
-            sg.add_edge(terminal, END)
+    async def generate_payload(self, method: str, operation_id: str, endpoint: str) -> Dict[str, Any]:
+        payload = {"name": "default", "price": 100}
+        return await self.confirm_payload(method, operation_id, endpoint, payload)
 
-        # Entry point
-        sg.set_entry_point(self.entry_nodes[0])
-        return sg.compile()
+    async def confirm_payload(self, method: str, operation_id: str, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        current_payload = payload
 
-    async def run(self):
-        state = GraphState(base_url=self.base_url)
+        await self.websocket.send_json({
+            "type": "confirm_payload",
+            "method": method,
+            "operation_id": operation_id,
+            "endpoint": endpoint,
+            "payload": current_payload,
+            "message": (
+                "Here's the initial payload. You can say things like:\n"
+                "- change name to 'abc'\n"
+                "- remove 'price'\n"
+                "- looks fine now"
+            )
+        })
 
         while True:
-            output = await self.graph.invoke(state.model_dump())
+            user_msg = await self.websocket.receive_text()
+            result = await self.llm_refiner(current_payload, user_msg)
 
-            # Handle payload confirmation
-            if isinstance(output, dict) and output.get("action") == "confirm_payload":
-                node_id = output["target_node"]
-                payload = output["payload"]
-                print(f"\nPayload for node '{node_id}': {payload}")
-                modified = await self.user_confirm_payload(node_id, payload)
-                state.payloads[node_id] = modified
-                state.confirmed[node_id] = True
-                state.first_run = False
-                continue
+            if isinstance(result, dict):
+                current_payload = result
+                await self.websocket.send_json({
+                    "type": "confirm_payload",
+                    "method": method,
+                    "operation_id": operation_id,
+                    "endpoint": endpoint,
+                    "payload": current_payload,
+                    "message": "Updated payload. Confirm or provide more changes."
+                })
+            elif result == "__approved__":
+                await self.websocket.send_json({
+                    "type": "confirmation_done",
+                    "method": method,
+                    "operation_id": operation_id,
+                    "endpoint": endpoint,
+                    "payload": current_payload,
+                    "message": "Payload confirmed and ready to proceed."
+                })
+                return current_payload
+            else:
+                await self.websocket.send_json({
+                    "type": "confirm_payload",
+                    "method": method,
+                    "operation_id": operation_id,
+                    "endpoint": endpoint,
+                    "payload": current_payload,
+                    "message": "Didn't understand that. Please confirm or modify the payload."
+                })
 
-            print("\n--- Final Results ---")
-            for k, v in output["results"].items():
-                print(f"{k}: {v}")
-            return output
+    async def astream(self):
+        await self.websocket.send_json({
+            "type": "workflow_start",
+            "message": "Building API execution workflow..."
+        })
 
-    async def user_confirm_payload(self, node_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        print(f"Please confirm or edit payload for node '{node_id}':")
-        print(payload)
-        # Simulate user confirmation - replace this with UI/CLI logic
-        await asyncio.sleep(0.5)
-        payload["sample"] = f"user_modified_{node_id}"
-        return payload
+        async for state in self.state_graph.astream({}):
+            await self.websocket.send_json({
+                "type": "state_update",
+                "message": f"Current state updated: {json.dumps(state)}",
+                "state": state
+            })
+
+        await self.websocket.send_json({
+            "type": "workflow_complete",
+            "message": "API execution workflow completed successfully."
+        })
+
+
+async def llm_refiner(payload: Dict[str, Any], user_instruction: str) -> Any:
+    prompt = f"""
+You're an assistant helping refine API JSON payloads based on user instructions.
+
+Current Payload:
+{json.dumps(payload, indent=2)}
+
+Instruction from user: "{user_instruction}"
+
+Respond with one of the following:
+1. If the instruction is approval (like "yes", "looks fine", "approved"), respond with: __approved__
+2. If the instruction modifies the payload, return the modified JSON only.
+
+Respond with valid JSON or "__approved__".
+"""
+
+    response = await fake_openai_call(prompt)
+    response = response.strip()
+
+    if response == "__approved__":
+        return "__approved__"
+
+    try:
+        return json.loads(response)
+    except Exception:
+        return None
+
+
+async def fake_openai_call(prompt: str) -> str:
+    print("LLM Prompt:", prompt)
+    return "__approved__"
