@@ -1,26 +1,27 @@
 import json
-from typing import Any, Dict, Callable, List
+import httpx
+from typing import Any, Dict, List
 from langgraph.graph import StateGraph
+from langchain.chat_models import AzureChatOpenAI
 
 class LanggraphWorkflow:
-    def __init__(self, graph_def: Dict[str, Any], websocket, llm_refiner: Callable):
+    def __init__(self, graph_def: Dict[str, Any], websocket, llm: AzureChatOpenAI):
         self.graph_def = graph_def
         self.websocket = websocket
-        self.llm_refiner = llm_refiner
+        self.llm = llm
         self.state_graph = None
 
     def extract_terminal_nodes(self) -> List[str]:
-        target_ids = {edge['target'] for edge in self.graph_def['edges']}
-        source_ids = {edge['source'] for edge in self.graph_def['edges']}
-        return list(target_ids - source_ids)
+        to_ids = {edge['to'] for edge in self.graph_def['edges']}
+        from_ids = {edge['from'] for edge in self.graph_def['edges']}
+        return list(to_ids - from_ids)
 
     def extract_entry_nodes(self) -> List[str]:
-        target_ids = {edge['target'] for edge in self.graph_def['edges']}
-        source_ids = {edge['source'] for edge in self.graph_def['edges']}
-        return list(source_ids - target_ids)
+        to_ids = {edge['to'] for edge in self.graph_def['edges']}
+        from_ids = {edge['from'] for edge in self.graph_def['edges']}
+        return list(from_ids - to_ids)
 
     def build_graph(self):
-        from langgraph.graph import StateGraph
         from langchain_core.runnables import RunnableLambda
 
         graph = StateGraph(state_schema=dict)
@@ -32,11 +33,11 @@ class LanggraphWorkflow:
             graph.add_node(node_id, node_map[node_id])
 
         for edge in self.graph_def['edges']:
-            graph.add_edge(edge['source'], edge['target'])
+            graph.add_edge(edge['from'], edge['to'])
 
         entry_nodes = self.extract_entry_nodes()
         if entry_nodes:
-            graph.set_entry_point(entry_nodes[0])  # Assuming single entry
+            graph.set_entry_point(entry_nodes[0])
 
         terminal_nodes = self.extract_terminal_nodes()
         for t in terminal_nodes:
@@ -46,27 +47,52 @@ class LanggraphWorkflow:
 
     def make_node_runner(self, node):
         async def run_node(state: Dict[str, Any]):
-            method = node['method']
-            operation_id = node['operation_id']
-            endpoint = node['endpoint']
+            method = node['type']
+            operation_id = node['id']
+            endpoint_template = node['endpoint']
+
+            endpoint = endpoint_template
+            for key, value in state.items():
+                if isinstance(value, dict):
+                    for subkey, subvalue in value.items():
+                        endpoint = endpoint.replace(f"{{{subkey}}}", str(subvalue))
 
             payload = await self.generate_payload(method, operation_id, endpoint)
 
             await self.websocket.send_json({
                 "type": "executing_api",
-                "message": f"Executing {method.upper()} {endpoint} ({operation_id})",
+                "sender": "bot",
+                "message": f"Executing {method.upper()} {endpoint} [{operation_id}]",
                 "method": method,
                 "endpoint": endpoint,
                 "operation_id": operation_id,
                 "payload": payload,
             })
 
-            # Simulated response
-            result = {"id": "123", "status": "success", "data": {"example": True}}
+            async with httpx.AsyncClient() as client:
+                try:
+                    if method.lower() == "post":
+                        resp = await client.post(endpoint, json=payload)
+                    elif method.lower() == "put":
+                        resp = await client.put(endpoint, json=payload)
+                    elif method.lower() == "get":
+                        resp = await client.get(endpoint, params=payload)
+                    elif method.lower() == "delete":
+                        resp = await client.delete(endpoint, params=payload)
+                    else:
+                        resp = None
+
+                    try:
+                        result = resp.json() if resp else {"error": "No response"}
+                    except Exception:
+                        result = {"error": "Failed to parse response"}
+                except Exception as e:
+                    result = {"error": str(e)}
 
             await self.websocket.send_json({
                 "type": "api_response",
-                "message": f"Executed {method.upper()} {endpoint}. Response: {json.dumps(result)}",
+                "sender": "bot",
+                "message": f"{method.upper()} {endpoint} executed. Response: {json.dumps(result)[:300]}...",
                 "operation_id": operation_id,
                 "response": result
             })
@@ -76,7 +102,18 @@ class LanggraphWorkflow:
         return run_node
 
     async def generate_payload(self, method: str, operation_id: str, endpoint: str) -> Dict[str, Any]:
-        payload = {"name": "default", "price": 100}
+        prompt = f"""
+Generate an example payload for the following API call.
+Method: {method.upper()}
+Operation ID: {operation_id}
+Endpoint: {endpoint}
+Return JSON only.
+"""
+        response = await self.llm.ainvoke(prompt)
+        try:
+            payload = json.loads(response.content.strip())
+        except Exception:
+            payload = {}
         return await self.confirm_payload(method, operation_id, endpoint, payload)
 
     async def confirm_payload(self, method: str, operation_id: str, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -84,99 +121,83 @@ class LanggraphWorkflow:
 
         await self.websocket.send_json({
             "type": "confirm_payload",
+            "sender": "bot",
             "method": method,
             "operation_id": operation_id,
             "endpoint": endpoint,
             "payload": current_payload,
             "message": (
-                "Here's the initial payload. You can say things like:\n"
-                "- change name to 'abc'\n"
-                "- remove 'price'\n"
-                "- looks fine now"
+                f"Suggested payload for {method.upper()} {endpoint} [{operation_id}].\n"
+                "You can respond with changes like: change name to 'abc', remove 'id', or say 'looks good'."
             )
         })
 
         while True:
             user_msg = await self.websocket.receive_text()
-            result = await self.llm_refiner(current_payload, user_msg)
+            result = await llm_refiner(current_payload, user_msg, self.llm)
 
             if isinstance(result, dict):
                 current_payload = result
                 await self.websocket.send_json({
                     "type": "confirm_payload",
+                    "sender": "bot",
                     "method": method,
                     "operation_id": operation_id,
                     "endpoint": endpoint,
                     "payload": current_payload,
-                    "message": "Updated payload. Confirm or provide more changes."
+                    "message": "Updated payload. Confirm or provide more instructions."
                 })
             elif result == "__approved__":
                 await self.websocket.send_json({
                     "type": "confirmation_done",
+                    "sender": "bot",
                     "method": method,
                     "operation_id": operation_id,
                     "endpoint": endpoint,
                     "payload": current_payload,
-                    "message": "Payload confirmed and ready to proceed."
+                    "message": "Payload confirmed. Proceeding with API call."
                 })
                 return current_payload
             else:
                 await self.websocket.send_json({
                     "type": "confirm_payload",
+                    "sender": "bot",
                     "method": method,
                     "operation_id": operation_id,
                     "endpoint": endpoint,
                     "payload": current_payload,
-                    "message": "Didn't understand that. Please confirm or modify the payload."
+                    "message": "Didn't understand. Please confirm or provide new instructions."
                 })
 
     async def astream(self):
-        await self.websocket.send_json({
-            "type": "workflow_start",
-            "message": "Building API execution workflow..."
-        })
-
         async for state in self.state_graph.astream({}):
             await self.websocket.send_json({
                 "type": "state_update",
-                "message": f"Current state updated: {json.dumps(state)}",
+                "sender": "bot",
+                "message": f"Graph state updated with new data.",
                 "state": state
             })
 
-        await self.websocket.send_json({
-            "type": "workflow_complete",
-            "message": "API execution workflow completed successfully."
-        })
 
-
-async def llm_refiner(payload: Dict[str, Any], user_instruction: str) -> Any:
+async def llm_refiner(payload: Dict[str, Any], user_instruction: str, llm: AzureChatOpenAI) -> Any:
     prompt = f"""
-You're an assistant helping refine API JSON payloads based on user instructions.
+You're assisting in refining JSON payloads for API calls.
 
 Current Payload:
 {json.dumps(payload, indent=2)}
 
-Instruction from user: "{user_instruction}"
+User Instruction: "{user_instruction}"
 
-Respond with one of the following:
-1. If the instruction is approval (like "yes", "looks fine", "approved"), respond with: __approved__
-2. If the instruction modifies the payload, return the modified JSON only.
-
-Respond with valid JSON or "__approved__".
+If approved, reply with __approved__.
+If changes are needed, return only modified JSON.
 """
+    response = await llm.ainvoke(prompt)
+    content = response.content.strip()
 
-    response = await fake_openai_call(prompt)
-    response = response.strip()
-
-    if response == "__approved__":
+    if content == "__approved__":
         return "__approved__"
 
     try:
-        return json.loads(response)
+        return json.loads(content)
     except Exception:
         return None
-
-
-async def fake_openai_call(prompt: str) -> str:
-    print("LLM Prompt:", prompt)
-    return "__approved__"
