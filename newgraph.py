@@ -4,11 +4,25 @@ from typing import Any, Dict, List
 from langgraph.graph import StateGraph
 from langchain.chat_models import AzureChatOpenAI
 from langchain_core.runnables import RunnableLambda
-from pydantic import BaseModel, Field
 
 
-class GraphState(BaseModel):
-    data: Dict[str, Any] = Field(default_factory=dict)
+def replace_path_variables(endpoint_template: str, state_data: Dict[str, Any]) -> str:
+    endpoint = endpoint_template
+    for key, value in state_data.items():
+        if isinstance(value, (str, int, float)):
+            endpoint = endpoint.replace(f"{{{key}}}", str(value))
+    return endpoint
+
+
+def flatten_response(response: Dict[str, Any], operation_id: str) -> Dict[str, Any]:
+    flat_data = {}
+    if isinstance(response, dict):
+        for key, val in response.items():
+            flat_data[key] = val
+    return {
+        "responses": [{operation_id: response}],
+        **flat_data
+    }
 
 
 class LanggraphWorkflow:
@@ -29,7 +43,7 @@ class LanggraphWorkflow:
         return list(from_ids - to_ids)
 
     def build_graph(self):
-        graph = StateGraph(GraphState)
+        graph = StateGraph(state_schema=dict)
         for node in self.graph_def['nodes']:
             graph.add_node(node['id'], RunnableLambda(self.make_node_runner(node)))
 
@@ -46,10 +60,11 @@ class LanggraphWorkflow:
         self.state_graph = graph.compile()
 
     def make_node_runner(self, node):
-        async def run_node(state: GraphState) -> GraphState:
+        async def run_node(state: Dict[str, Any]):
             method = node['type']
             operation_id = node['id']
-            endpoint = self.fill_path_params(node['endpoint'], state.data)
+            endpoint_template = node['endpoint']
+            endpoint = replace_path_variables(endpoint_template, state)
 
             payload = await self.generate_payload(method, operation_id, endpoint)
 
@@ -65,8 +80,21 @@ class LanggraphWorkflow:
 
             async with httpx.AsyncClient() as client:
                 try:
-                    resp = await getattr(client, method.lower())(endpoint, json=payload if method.lower() in ["post", "put"] else None, params=payload if method.lower() in ["get", "delete"] else None)
-                    result = resp.json()
+                    if method.lower() == "post":
+                        resp = await client.post(endpoint, json=payload)
+                    elif method.lower() == "put":
+                        resp = await client.put(endpoint, json=payload)
+                    elif method.lower() == "get":
+                        resp = await client.get(endpoint, params=payload)
+                    elif method.lower() == "delete":
+                        resp = await client.delete(endpoint, params=payload)
+                    else:
+                        resp = None
+
+                    try:
+                        result = resp.json() if resp else {"error": "No response"}
+                    except Exception:
+                        result = {"error": "Failed to parse response"}
                 except Exception as e:
                     result = {"error": str(e)}
 
@@ -78,19 +106,10 @@ class LanggraphWorkflow:
                 "response": result
             })
 
-            extracted_ids = {k: v for k, v in result.items() if "id" in k.lower()}
-            return GraphState(data={**state.data, operation_id: result, **extracted_ids})
+            next_state = flatten_response(result, operation_id)
+            return {**state, **next_state}
 
         return run_node
-
-    def fill_path_params(self, endpoint: str, values: Dict[str, Any]) -> str:
-        for key, val in values.items():
-            if isinstance(val, dict):
-                for subkey, subval in val.items():
-                    endpoint = endpoint.replace(f"{{{subkey}}}", str(subval))
-            else:
-                endpoint = endpoint.replace(f"{{{key}}}", str(val))
-        return endpoint
 
     async def generate_payload(self, method: str, operation_id: str, endpoint: str) -> Dict[str, Any]:
         prompt = f"""
@@ -161,12 +180,12 @@ Return JSON only.
                 })
 
     async def astream(self):
-        async for state in self.state_graph.astream(GraphState(data={})):
+        async for state in self.state_graph.astream({}):
             await self.websocket.send_json({
                 "type": "state_update",
                 "sender": "bot",
-                "message": "Graph state updated with new data.",
-                "state": state.data
+                "message": f"Graph state updated.",
+                "state": state
             })
 
 
@@ -188,4 +207,7 @@ If changes are needed, return only modified JSON.
     if content == "__approved__":
         return "__approved__"
 
-    try
+    try:
+        return json.loads(content)
+    except Exception:
+        return None
