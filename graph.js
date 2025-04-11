@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'https://esm.sh/react@17.0.2';
-import ReactDOM from 'https://esm.sh/react-dom@17.0.2';
+import React, { useEffect, useState } from 'https://esm.sh/react';
+import ReactDOM from 'https://esm.sh/react-dom';
 import ReactFlow, { Background, Controls } from 'https://esm.sh/react-flow-renderer@10.3.17';
 
 function GraphViewer({ graph }) {
@@ -18,15 +18,13 @@ function GraphViewer({ graph }) {
     style: { stroke: '#555' }
   }));
 
-  return React.createElement(
-    'div',
-    { style: { width: '100%', height: '100%' } },
-    React.createElement(
-      ReactFlow,
-      { nodes, edges, fitView: true },
-      React.createElement(Background, null),
-      React.createElement(Controls, null)
-    )
+  return (
+    <div style={{ width: '100%', height: '100%' }}>
+      <ReactFlow nodes={nodes} edges={edges} fitView>
+        <Background />
+        <Controls />
+      </ReactFlow>
+    </div>
   );
 }
 
@@ -35,21 +33,34 @@ function App() {
 
   useEffect(() => {
     const ws = new WebSocket('ws://localhost:8000/chat');
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+    };
+
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'workflow_graph') {
         setGraph(data.graph);
       }
     };
-    return () => ws.close();
+
+    ws.onclose = (event) => {
+      console.log('WebSocket closed:', event.code, event.reason);
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    return () => {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    };
   }, []);
 
-  return graph
-    ? React.createElement(GraphViewer, { graph })
-    : React.createElement('div', null, 'Waiting for graph...');
+  return graph ? <GraphViewer graph={graph} /> : <div style={{ padding: 20 }}>Waiting for graph...</div>;
 }
 
-ReactDOM.render(
-  React.createElement(App),
-  document.getElementById('root')
-);
+ReactDOM.render(<App />, document.getElementById('root'));
