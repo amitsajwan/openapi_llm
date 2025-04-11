@@ -1,35 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API Execution Graph</title>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.0.2/mermaid.min.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>LangGraph Workflow</title>
+  <link href="https://unpkg.com/react-flow-renderer@10.5.0/dist/style.css" rel="stylesheet">
+  <style>
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      font-family: sans-serif;
+      background: #fafafa;
+    }
+  </style>
 </head>
 <body>
-    <h2>API Execution Workflow</h2>
-    <div class="mermaid" id="mermaid-diagram">Loading graph...</div>
-
-    <script>
-        // Initialize Mermaid once the page loads
-        document.addEventListener("DOMContentLoaded", function () {
-            mermaid.initialize({ startOnLoad: false });
-
-            // WebSocket connection
-            const socket = new WebSocket("ws://localhost:8000/ws");
-
-            socket.onmessage = (event) => {
-                console.log("Received Mermaid data:", event.data);
-                const diagram = document.getElementById("mermaid-diagram");
-                
-                // Ensure correct syntax for Mermaid.js
-                diagram.innerHTML = "```mermaid\n" + event.data + "\n```";
-
-                // Re-render Mermaid graph
-                mermaid.init(undefined, ".mermaid");
-            };
-        });
-    </script>
+  <div id="root"></div>
+  <script type="module" src="/static/graph.js"></script>
 </body>
 </html>
