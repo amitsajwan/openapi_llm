@@ -54,4 +54,4 @@ function App() {
 
 // Mount using React 18+ way
 const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(React.create
+root.render(React.createElement(App));
