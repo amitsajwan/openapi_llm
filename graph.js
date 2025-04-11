@@ -18,13 +18,15 @@ function GraphViewer({ graph }) {
     style: { stroke: '#555' }
   }));
 
-  return (
-    <div style={{ width: '100%', height: '100%' }}>
-      <ReactFlow nodes={nodes} edges={edges} fitView>
-        <Background />
-        <Controls />
-      </ReactFlow>
-    </div>
+  return React.createElement(
+    'div',
+    { style: { width: '100%', height: '100%' } },
+    React.createElement(
+      ReactFlow,
+      { nodes, edges, fitView: true },
+      React.createElement(Background, null),
+      React.createElement(Controls, null)
+    )
   );
 }
 
@@ -42,7 +44,12 @@ function App() {
     return () => ws.close();
   }, []);
 
-  return graph ? <GraphViewer graph={graph} /> : <div>Waiting for graph...</div>;
+  return graph
+    ? React.createElement(GraphViewer, { graph })
+    : React.createElement('div', null, 'Waiting for graph...');
 }
 
-ReactDOM.render(<App />, document.getElementById('root'));
+ReactDOM.render(
+  React.createElement(App),
+  document.getElementById('root')
+);
