@@ -1,0 +1,85 @@
+// index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LangGraph Workflow Viewer</title>
+  <link href="https://unpkg.com/react-flow-renderer@10.5.0/dist/style.css" rel="stylesheet">
+  <style>
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      font-family: sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
+
+
+// main.js
+import React, { useEffect, useState } from 'https://esm.sh/react';
+import ReactDOM from 'https://esm.sh/react-dom';
+import ReactFlow, { Background, Controls, MiniMap } from 'https://esm.sh/react-flow-renderer';
+
+function GraphViewer({ graph }) {
+  const nodes = graph.nodes.map((node, i) => ({
+    id: node.id,
+    data: { label: `${node.type.toUpperCase()}\n${node.endpoint}` },
+    position: { x: 100 + i * 150, y: 100 },
+    style: {
+      padding: 10,
+      border: '2px solid #4A90E2',
+      borderRadius: 8,
+      background: '#E6F0FA',
+      fontSize: 12,
+      width: 200,
+      whiteSpace: 'pre-line'
+    }
+  }));
+
+  const edges = graph.edges.map(edge => ({
+    id: `${edge.from}-${edge.to}`,
+    source: edge.from,
+    target: edge.to,
+    animated: true,
+    style: { stroke: '#555' },
+    label: edge.label || '',
+    labelBgStyle: { fill: '#fff', color: '#333', fillOpacity: 0.7 },
+  }));
+
+  return (
+    <div style={{ width: '100%', height: '100%' }}>
+      <ReactFlow nodes={nodes} edges={edges} fitView>
+        <Background />
+        <MiniMap />
+        <Controls />
+      </ReactFlow>
+    </div>
+  );
+}
+
+function App() {
+  const [graph, setGraph] = useState(null);
+
+  useEffect(() => {
+    const ws = new WebSocket('ws://localhost:8000/chat');
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'workflow_graph') {
+        setGraph(data.graph);
+      }
+    };
+    return () => ws.close();
+  }, []);
+
+  return graph ? <GraphViewer graph={graph} /> : <div>Waiting for graph...</div>;
+}
+
+ReactDOM.render(<App />, document.getElementById('root'));
