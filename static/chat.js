@@ -1,34 +1,86 @@
-document.getElementById('openapiForm').addEventListener('submit', async function(event) {
-    event.preventDefault();
+const socket = new WebSocket("ws://localhost:8000/ws");
 
-    const url = document.getElementById('url').value;
-    const fileInput = document.getElementById('file');
+socket.onmessage = function (event) {
+    const msg = JSON.parse(event.data);
+    renderMessage(
+        msg.type || msg.sender || "bot",
+        msg.message || msg.response || JSON.stringify(msg, null, 2)
+    );
+};
 
-    const formData = new FormData();
+function renderMessage(type, content) {
+    const chatBox = document.getElementById("chatBox");
+    const msgDiv = document.createElement("div");
+    msgDiv.className = `message ${type}`;
+
+    const timestamp = new Date().toLocaleTimeString();
+
+    const timestampDiv = document.createElement("div");
+    timestampDiv.className = "timestamp";
+    timestampDiv.innerText = timestamp;
+    msgDiv.appendChild(timestampDiv);
+
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "message-content";
+
+    if (isJson(content)) {
+        contentDiv.innerHTML = `<pre><code class="json">${syntaxHighlight(content)}</code></pre>`;
+        hljs.highlightElement(contentDiv.querySelector("code"));
+    } else if (content.includes("```") || content.includes("#")) {
+        contentDiv.innerHTML = marked.parse(content);
+    } else {
+        contentDiv.innerText = content;
+    }
+
+    msgDiv.appendChild(contentDiv);
+    chatBox.appendChild(msgDiv);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function sendMessage() {
+    const input = document.getElementById("userInput");
+    const text = input.value.trim();
+    if (text) {
+        renderMessage("human", text);
+        socket.send(JSON.stringify({ message: text }));
+        input.value = "";
+    }
+}
+
+function handleEnter(event) {
+    if (event.key === "Enter") sendMessage();
+}
+
+function uploadOpenAPI() {
+    const file = document.getElementById("openapiFile").files[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = () => socket.send(JSON.stringify({ message: reader.result }));
+        reader.readAsText(file);
+    }
+}
+
+function submitOpenAPIUrl() {
+    const url = document.getElementById("openapiUrl").value.trim();
     if (url) {
-        formData.append('url', url);
+        socket.send(JSON.stringify({ message: url }));
     }
-    if (fileInput.files.length > 0) {
-        formData.append('file', fileInput.files[0]);
-    }
+}
 
-    const messageElement = document.getElementById('message');
-
+function isJson(text) {
     try {
-        const response = await fetch('/submit_openapi', {
-            method: 'POST',
-            body: formData,
-        });
-
-        if (!response.ok) {
-            throw new Error('Failed to submit OpenAPI data');
-        }
-
-        const data = await response.json();
-        messageElement.textContent = data.message || 'OpenAPI data loaded successfully!';
-        messageElement.style.color = 'green';
-    } catch (error) {
-        messageElement.textContent = `Error: ${error.message}`;
-        messageElement.style.color = 'red';
+        JSON.parse(text);
+        return true;
+    } catch {
+        return false;
     }
-});
+}
+
+function syntaxHighlight(json) {
+    if (typeof json !== "string") {
+        json = JSON.stringify(json, null, 2);
+    }
+    return json.replace(/&/g, "&amp;")
+               .replace(/</g, "&lt;")
+               .replace(/>/g, "&gt;");
+}
