@@ -1,131 +1,124 @@
-from langgraph.graph import StateGraph, END, RunnableLambda
-from langgraph.checkpoint import interrupt
-from typing import Dict, Any, Callable, Optional
-from pydantic import BaseModel, Field
-from dataclasses import dataclass
+from typing import Any, Callable, Awaitable, Dict
+from langgraph.graph import StateGraph
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.runner import StreamEvent, StreamDelta, SubmitInterruptRequest
+from langchain_core.runnables import RunnableLambda
+from langgraph.graph.schema import GraphContext
+from api_executor import APIExecutor
+from pydantic import BaseModel
+from fastapi import WebSocket
+import asyncio
 
-# -------------------------------
-# Schema Definitions
-# -------------------------------
-class Node(BaseModel):
-    operationId: str
-    method: str
-    path: str
-    payload: Optional[dict] = Field(default_factory=dict)
 
-class Edge(BaseModel):
-    from_node: str
-    to_node: str
-    can_parallel: bool
-    reason: Optional[str] = None
-    requires_human_validation: bool = False
+# ----------------------
+# 1. Define Graph State
+# ----------------------
 
-class GraphOutput(BaseModel):
-    nodes: list[Node]
-    edges: list[Edge]
+class GraphState(BaseModel):
+    operation_results: Dict[str, Any] = {}
+    extracted_ids: Dict[str, Any] = {}
 
-@dataclass
-class GraphState:
-    operation_results: Dict[str, Any]
-    extracted_ids: Dict[str, str]
 
-# -------------------------------
-# GraphBuilder (LangGraph Generator)
-# -------------------------------
-class GraphBuilder:
-    def __init__(self, graph_def: GraphOutput, api_executor, websocket_callback: Callable[[str, Any], None]):
+# ----------------------------
+# 2. Define LangGraph Workflow
+# ----------------------------
+
+class LangGraphWorkflow:
+    def __init__(
+        self,
+        graph_def: Dict,
+        api_executor: APIExecutor,
+        websocket_callback: Callable[[str, Dict[str, Any]], Awaitable[None]],
+    ):
         self.graph_def = graph_def
         self.api_executor = api_executor
         self.websocket_callback = websocket_callback
-        self.state_graph = StateGraph(GraphState)
 
-    def build(self):
-        for node in self.graph_def.nodes:
-            self.state_graph.add_node(
-                node.operationId,
-                RunnableLambda(self._make_node_runner(node))
+        self.state_graph = self._build_graph()
+        self.runner = self.state_graph.compile()
+
+    # ------------------------
+    # 3. Build LangGraph nodes
+    # ------------------------
+    def _build_graph(self) -> StateGraph:
+        builder = StateGraph(GraphState)
+        nodes = {node['operationId']: node for node in self.graph_def['nodes']}
+
+        for op_id, node in nodes.items():
+            builder.add_node(op_id, RunnableLambda(self.make_node_runner(node)))
+
+        for edge in self.graph_def['edges']:
+            if edge['can_parallel']:
+                builder.add_edge(edge['from_node'], edge['to_node'])
+            else:
+                builder.add_edge(edge['from_node'], edge['to_node'])
+
+        entry_node = self.graph_def['nodes'][0]['operationId']
+        builder.set_entry_point(entry_node)
+        return builder
+
+    # --------------------
+    # 4. Node Runner Logic
+    # --------------------
+    def make_node_runner(self, node: Dict[str, Any]) -> Callable[[GraphState], Awaitable[GraphState]]:
+        async def run_node(state: GraphState) -> GraphState:
+            payload = node.get("payload", {})
+
+            # Human-in-the-loop confirmation using LangGraph's interrupt
+            confirmed_payload = await GraphContext.interrupt(
+                f"Confirm payload for {node['operationId']}",
+                {
+                    "operationId": node["operationId"],
+                    "method": node["method"],
+                    "path": node["path"],
+                    "payload": payload,
+                }
             )
 
-        for edge in self.graph_def.edges:
-            if edge.requires_human_validation:
-                self.state_graph.add_conditional_edges(
-                    edge.from_node,
-                    lambda state: "human_decision",
-                    {
-                        "human_decision": edge.to_node
-                    }
-                )
-            else:
-                self.state_graph.add_edge(edge.from_node, edge.to_node)
+            # Execute API
+            result = await self.api_executor.execute_api(
+                method=node["method"],
+                endpoint=node["path"],
+                payload=confirmed_payload.get("payload", payload)
+            )
 
-        terminal_nodes = self._find_terminal_nodes()
-        for node_id in terminal_nodes:
-            self.state_graph.add_edge(node_id, END)
+            # Extract IDs from result for chaining
+            extracted = self.api_executor.extract_ids(result)
 
-        return self.state_graph
+            return GraphState(
+                operation_results={**state.operation_results, node["operationId"]: result},
+                extracted_ids={**state.extracted_ids, **extracted}
+            )
 
-    def _make_node_runner(self, node: Node):
-        async def run_node(state: GraphState) -> GraphState:
-            payload = node.payload or {}
-
-            # Ask user to confirm/edit payload via WebSocket
-            confirmed_payload = await self._request_payload_confirmation(node, payload)
-
-            try:
-                result = await self.api_executor.execute_api(
-                    method=node.method,
-                    endpoint=node.path,
-                    payload=confirmed_payload
-                )
-                self.websocket_callback("api_result", {
-                    "operationId": node.operationId,
-                    "message": f"{node.operationId} executed successfully.",
-                    "response": result
-                })
-                extracted = self._extract_ids(result)
-                return GraphState(
-                    operation_results={**state.operation_results, node.operationId: result},
-                    extracted_ids={**state.extracted_ids, **extracted}
-                )
-            except Exception as e:
-                self.websocket_callback("api_result", {
-                    "operationId": node.operationId,
-                    "message": f"{node.operationId} failed: {str(e)}",
-                    "response": {}
-                })
-                return state
         return run_node
 
-    async def _request_payload_confirmation(self, node: Node, payload: dict) -> dict:
-        updated_payload = await interrupt(
-            f"Confirm payload for {node.operationId}",
-            payload
-        )
-        return updated_payload
+    # ---------------------------------
+    # 5. Async stream with WebSocket IO
+    # ---------------------------------
+    async def astream(self, state: GraphState):
+        async for step in self.runner.astream(state):
+            if isinstance(step, dict) and step.get("__type__") == "interrupt":
+                await self.websocket_callback("payload_confirmation", {
+                    "interrupt_key": step["key"],
+                    "prompt": step["name"],
+                    "operationId": step["content"]["operationId"],
+                    "payload": step["content"]["payload"]
+                })
+                continue
 
-    def _extract_ids(self, result: dict) -> Dict[str, str]:
-        ids = {}
-        if isinstance(result, dict):
-            for key, val in result.items():
-                if key.endswith("id") and isinstance(val, (str, int)):
-                    ids[key] = str(val)
-        return ids
+            # Handle API result (only new ones)
+            delta_keys = step.operation_results.keys() - state.operation_results.keys()
+            for op_id in delta_keys:
+                await self.websocket_callback("api_result", {
+                    "operationId": op_id,
+                    "result": step.operation_results[op_id]
+                })
 
-    def _find_terminal_nodes(self):
-        from_nodes = {edge.from_node for edge in self.graph_def.edges}
-        to_nodes = {edge.to_node for edge in self.graph_def.edges}
-        return [n.operationId for n in self.graph_def.nodes if n.operationId not in from_nodes - to_nodes]
-
-
-# -------------------------------
-# LangGraphWorkflow (Runner Wrapper)
-# -------------------------------
-class LangGraphWorkflow:
-    def __init__(self, graph_def: GraphOutput, api_executor, websocket_callback: Callable[[str, Any], None]):
-        self.builder = GraphBuilder(graph_def, api_executor, websocket_callback)
-        self.state_graph = self.builder.build().compile()
-
-    async def run(self, initial_state: Optional[GraphState] = None):
-        state = initial_state or GraphState(operation_results={}, extracted_ids={})
-        async for step in self.state_graph.astream(state):
+            state = step
             yield step
+
+    # ---------------------------------------
+    # 6. Submit human response for interrupt
+    # ---------------------------------------
+    async def submit_interrupt_response(self, key: str, value: Dict[str, Any]):
+        await self.runner.submit_interrupt(key, value)
