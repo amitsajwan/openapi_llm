@@ -1,98 +1,72 @@
-# main.py
-
-import asyncio
-import uuid
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+# langgraph_builder.py
+from typing import Any, Dict, Callable
+from pydantic import BaseModel
 from langgraph.graph import StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 from langchain_core.runnables import RunnableLambda
-from pydantic import BaseModel
-
-app = FastAPI()
+from api_executor import APIExecutor
 
 
-# 1. Define your state schema
 class GraphState(BaseModel):
-    operation_results: dict = {}
-    extracted_ids: dict = {}
+    operation_results: Dict[str, Any] = {}
+    extracted_ids: Dict[str, Any] = {}
 
 
-# 2. A simple API executor stub
-class APIExecutor:
-    async def execute_api(self, method, endpoint, payload):
-        # simulate API call...
-        await asyncio.sleep(0.1)
-        return {"status": 200, "data": {"payload": payload}}
+class LangGraphBuilder:
+    def __init__(self, graph_def: Dict[str, Any], api_executor: APIExecutor):
+        self.graph_def = graph_def
+        self.api_executor = api_executor
 
-    def extract_ids(self, result):
-        # stub: no ids
-        return {}
+    def build_runner(self):
+        builder = StateGraph(GraphState)
 
+        # 1) Add one node per operation
+        for node in self.graph_def["nodes"]:
+            builder.add_node(
+                node["operationId"],
+                RunnableLambda(self._make_runner(node))
+            )
 
-# 3. Build the LangGraph workflow (single node for brevity)
-def build_runner():
-    builder = StateGraph(GraphState)
-    # A single node that interrupts
-    async def human_then_api(state: GraphState) -> GraphState:
-        # Prepare payload
-        initial = {"question": "Please revise the text", "some_text": "Original text"}
-        # Pause here: yield an Interrupt event
-        reply = interrupt(initial)  # single‑arg interrupt :contentReference[oaicite:1]{index=1}
+        # 2) Wire edges (dependencies)
+        for edge in self.graph_def["edges"]:
+            builder.add_edge(edge["from_node"], edge["to_node"])
 
-        # After resume, `reply` holds the user's dict
-        # Now simulate API call with the confirmed payload
-        exec_result = await APIExecutor().execute_api(
-            method="POST",
-            endpoint="/dummy",
-            payload=reply.get("some_text")
-        )
-        # Return updated state
-        return GraphState(
-            operation_results={"human_then_api": exec_result},
-            extracted_ids={}
-        )
+        # 3) Set entry point
+        entry = self.graph_def["nodes"][0]["operationId"]
+        builder.set_entry_point(entry)
 
-    builder.add_node("human_then_api", RunnableLambda(human_then_api))
-    builder.set_entry_point("human_then_api")
-    # Compile with MemorySaver for interrupt support
-    return builder.compile(checkpointer=MemorySaver())
+        # 4) Compile with in‑memory checkpointing for interrupts
+        runner = builder.compile(checkpointer=MemorySaver())
+        return runner
 
+    def _make_runner(self, node: Dict[str, Any]) -> Callable[[GraphState], GraphState]:
+        async def run_node(state: GraphState) -> GraphState:
+            # Prepare the initial payload dict
+            initial = {
+                "operationId": node["operationId"],
+                "method": node["method"],
+                "path": node["path"],
+                "payload": node.get("payload", {})
+            }
 
-# 4. WebSocket handler: stream + resume
-@app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
-    await ws.accept()
-    runner = build_runner()
-    # Unique thread_id required by MemorySaver
-    config = {"thread_id": uuid.uuid4().hex}
+            # Pause here and ask the human to confirm/edit
+            confirmed: Dict[str, Any] = interrupt(initial)
 
-    try:
-        # Stream through the graph
-        async for event in runner.astream({}, config):  # empty initial state
-            # 4a. Handle the interrupt event
-            if "__interrupt__" in event:
-                intr_obj = event["__interrupt__"][0]
-                # intr_obj.value is {'question':..., 'some_text':...}
-                await ws.send_json({
-                    "type": "payload_confirmation",
-                    "interrupt_key": intr_obj.ns[0],
-                    "prompt": intr_obj.value["question"],
-                    "payload": intr_obj.value
-                })
-                # Wait for user reply
-                msg = await ws.receive_json()
-                # Resume with the user-provided dict
-                await runner.submit(Command(resume=msg["payload"]), config)  :contentReference[oaicite:2]{index=2}
-                continue
+            # Execute the API with the confirmed payload
+            result = await self.api_executor.execute_api(
+                method=node["method"],
+                endpoint=node["path"],
+                payload=confirmed.get("payload", initial["payload"])
+            )
 
-            # 4b. Normal node completion
-            for op_id, result in event["operation_results"].items():
-                await ws.send_json({
-                    "type": "api_response",
-                    "operationId": op_id,
-                    "result": result
-                })
+            # Extract any IDs for placeholders in downstream calls
+            extracted = self.api_executor.extract_ids(result)
 
-    except WebSocketDisconnect:
-        pass
+            # Return updated state
+            return GraphState(
+                operation_results={**state.operation_results, node["operationId"]: result},
+                extracted_ids={**state.extracted_ids, **extracted}
+            )
+
+        return run_node
