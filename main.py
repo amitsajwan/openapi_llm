@@ -1,5 +1,6 @@
-# main.py
-import asyncio, uuid, json
+import asyncio
+import uuid
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from langgraph_builder import LangGraphBuilder, GraphState
 from api_executor import APIExecutor
@@ -10,33 +11,36 @@ app = FastAPI()
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
 
-    # 1. Receive graph spec
-    raw = await ws.receive_text()
-    graph_def = json.loads(raw)
-
-    # 2. Prepare API executor
-    api_exec = APIExecutor(base_url="https://api.example.com")
-
-    # 3. Define an async callback so send_json is awaited
-    async def ws_callback(msg_type: str, payload: dict):
-        await ws.send_json({"type": msg_type, **payload})
-
-    # 4. Build the LangGraph runner
-    builder = LangGraphBuilder(
-        graph_def=graph_def,
-        api_executor=api_exec,
-        websocket_callback=ws_callback
-    )
-    runner = builder.runner  # already compiled with MemorySaver()
-
-    # 5. Start streaming
-    state = GraphState()
-    config = {"thread_id": uuid.uuid4().hex}
-
     try:
-        async for _ in builder.astream(state, config):
-            # all messaging handled inside astream via ws_callback
-            pass
+        # 1) Receive graph JSON
+        raw = await ws.receive_text()
+        graph_def = json.loads(raw)
+
+        # 2) Instantiate API executor & builder
+        api_exec = APIExecutor(base_url="https://api.example.com")
+        builder = LangGraphBuilder(
+            graph_def=graph_def,
+            api_executor=api_exec,
+            websocket_callback=lambda t, p: asyncio.create_task(ws.send_json({"type": t, **p}))
+        )
+
+        # 3) Setup state + config
+        state = GraphState()
+        config = {"thread_id": uuid.uuid4().hex}
+
+        # 4) Run astream & receiver concurrently
+        async def sender():
+            async for _ in builder.astream(state, config):
+                pass
+
+        async def receiver():
+            while True:
+                msg = await ws.receive_json()
+                if msg.get("type") == "user_payload_confirmation":
+                    # pass the user's payload back into the builder
+                    await builder.submit_resume(msg["payload"])
+
+        await asyncio.gather(sender(), receiver())
+
     except WebSocketDisconnect:
-        # client disconnected
         return
