@@ -8,7 +8,7 @@ from api_executor import APIExecutor
 import asyncio
 
 class GraphState(BaseModel):
-    operation_results: Dict[str, Any] = {}
+    operations: List[Dict[str, Any]] = []
     extracted_ids: Dict[str, Any] = {}
 
 class LangGraphBuilder:
@@ -21,31 +21,25 @@ class LangGraphBuilder:
         self.graph_def = graph_def
         self.api_executor = api_executor
         self.websocket_callback = websocket_callback
-        # Queue to receive the user’s resume payload
         self._resume_queue: asyncio.Queue = asyncio.Queue()
 
-        # Build & compile
         builder = StateGraph(GraphState)
         self._build_graph(builder)
         self.runner = builder.compile(checkpointer=MemorySaver())
 
     def _build_graph(self, builder: StateGraph):
-        # add nodes
         for node in self.graph_def["nodes"]:
             builder.add_node(
                 node["operationId"],
                 RunnableLambda(self._make_runner(node))
             )
-        # add edges
         for edge in self.graph_def["edges"]:
             builder.add_edge(edge["from_node"], edge["to_node"])
-        # entry
         entry = self.graph_def["nodes"][0]["operationId"]
         builder.set_entry_point(entry)
 
     def _make_runner(self, node: Dict[str, Any]):
-        async def run_node(state: GraphState) -> GraphState:
-            # initial payload dict
+        async def run_node(state: GraphState) -> Dict[str, Any]:
             initial = {
                 "operationId": node["operationId"],
                 "method": node["method"],
@@ -53,23 +47,20 @@ class LangGraphBuilder:
                 "payload": node.get("payload", {}),
             }
 
-            # pause for human confirmation
             confirmed: Dict[str, Any] = interrupt(initial)
 
-            # execute API
             result = await self.api_executor.execute_api(
                 method=node["method"],
                 endpoint=node["path"],
                 payload=confirmed.get("payload", initial["payload"])
             )
 
-            # extract IDs
             extracted = self.api_executor.extract_ids(result)
 
-            return GraphState(
-                operation_results={**state.operation_results, node["operationId"]: result},
-                extracted_ids={**state.extracted_ids, **extracted}
-            )
+            return {
+                "operations": [{"operation_id": node["operationId"], "result": result}],
+                "extracted_ids": {**state.extracted_ids, **extracted}
+            }
         return run_node
 
     async def astream(
@@ -83,34 +74,26 @@ class LangGraphBuilder:
             raise ValueError("config must include 'thread_id' for checkpointing")
 
         async for step in self.runner.astream(state.dict(), cfg):
-            # 1) Interrupt event
             if "__interrupt__" in step:
                 intr = step["__interrupt__"][0]
-                # send prompt + payload
                 await self.websocket_callback("payload_confirmation", {
                     "interrupt_key": intr.ns[0],
                     "prompt": intr.value.get("question", "Confirm payload"),
                     "payload": intr.value.get("payload", {})
                 })
-                # wait for user to reply via queue
                 resume_value = await self._resume_queue.get()
-                # resume graph
-                await self.runner.submit(Command(resume=resume_value), cfg)
+                await self.runner.ainvoke(Command(resume=resume_value), cfg)
                 continue
 
-            # 2) API result events
-            new_ops = set(step["operation_results"]) - set(state.operation_results)
-            for op_id in new_ops:
+            new_ops = step.get("operations", [])
+            for op in new_ops:
                 await self.websocket_callback("api_response", {
-                    "operationId": op_id,
-                    "result": step["operation_results"][op_id]
+                    "operationId": op["operation_id"],
+                    "result": op["result"]
                 })
 
             state = GraphState(**step)
             yield state
 
     async def submit_resume(self, resume_value: Any):
-        """
-        Called by main.py when user confirms payload.
-        """
         await self._resume_queue.put(resume_value)
