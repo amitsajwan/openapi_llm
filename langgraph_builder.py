@@ -68,42 +68,43 @@ class LangGraphBuilder:
         initial_state: Optional[GraphState] = None,
         config: Optional[Dict[str, Any]] = None
     ):
-        state = initial_state or GraphState()
+        """
+        Streams execution, handles interrupts and resumes in‑stream.
+        """
+        state_dict = (initial_state or GraphState()).dict()
         cfg = config or {}
         if "thread_id" not in cfg:
-            raise ValueError("config must include 'thread_id' for checkpointing")
+            raise ValueError("Missing thread_id in config for checkpointing")
 
-        async for step in self.runner.astream(state.dict(), cfg):
+        gen = self.runner.astream(state_dict, cfg)
+        while True:
+            try:
+                step = await gen.__anext__()
+            except StopAsyncIteration:
+                break
+
+            # 1) Handle interrupt pause
             if "__interrupt__" in step:
                 intr = step["__interrupt__"][0]
                 await self.websocket_callback("payload_confirmation", {
                     "interrupt_key": intr.ns[0],
                     "prompt": intr.value.get("question", "Confirm payload"),
-                    "payload": intr.value.get("payload", {})
+                    "payload": intr.value
                 })
-                resume_value = await self._resume_queue.get()
-                # Resume streaming with the provided resume value
-                async for resumed_step in self.runner.astream(Command(resume=resume_value), cfg):
-                    # Process resumed steps
-                    new_ops = resumed_step.get("operations", [])
-                    for op in new_ops:
-                        await self.websocket_callback("api_response", {
-                            "operationId": op["operation_id"],
-                            "result": op["result"]
-                        })
-                    state = GraphState(**resumed_step)
-                    yield state
+                resume_val = await self._resume_q.get()
+                # Resume in‑stream using Command(resume)
+                gen = self.runner.astream(Command(resume=resume_val), cfg)  # continue streaming :contentReference[oaicite:3]{index=3}
                 continue
-        
-            new_ops = step.get("operations", [])
-            for op in new_ops:
+
+            # 2) Emit new API results
+            for op in step.get("operations", []):
                 await self.websocket_callback("api_response", {
                     "operationId": op["operation_id"],
                     "result": op["result"]
                 })
-        
-            state = GraphState(**step)
-            yield state
+
+            state_dict = step
+            yield GraphState(**step)
 
 
     async def submit_resume(self, resume_value: Any):
