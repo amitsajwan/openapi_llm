@@ -82,18 +82,29 @@ class LangGraphBuilder:
                     "payload": intr.value.get("payload", {})
                 })
                 resume_value = await self._resume_queue.get()
-                await self.runner.ainvoke(Command(resume=resume_value), cfg)
+                # Resume streaming with the provided resume value
+                async for resumed_step in self.runner.astream(Command(resume=resume_value), cfg):
+                    # Process resumed steps
+                    new_ops = resumed_step.get("operations", [])
+                    for op in new_ops:
+                        await self.websocket_callback("api_response", {
+                            "operationId": op["operation_id"],
+                            "result": op["result"]
+                        })
+                    state = GraphState(**resumed_step)
+                    yield state
                 continue
-
+        
             new_ops = step.get("operations", [])
             for op in new_ops:
                 await self.websocket_callback("api_response", {
                     "operationId": op["operation_id"],
                     "result": op["result"]
                 })
-
+        
             state = GraphState(**step)
             yield state
+
 
     async def submit_resume(self, resume_value: Any):
         await self._resume_queue.put(resume_value)
