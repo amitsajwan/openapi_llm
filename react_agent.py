@@ -1,38 +1,68 @@
+import json
 from langchain.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
-from langchain.agents import AgentExecutor, Tool
-from langchain.agents.react.agent import ReActAgent
+from langchain.agents import AgentExecutor, create_json_chat_agent
+from langchain.prompts import (
+    SystemMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+    ChatPromptTemplate
+)
 from langchain.memory import ConversationBufferMemory
 
-# Example tools (replace with yours)
+# 1. Prepare your existing tools (example placeholders)
+from your_tools import (
+    general_inquiry,
+    openapi_help,
+    generate_payload,
+    generate_sequence,
+    create_workflow,
+    execute_workflow,
+)
 tools = [
-    Tool(name="general_inquiry", func=general_inquiry, description="Answer general questions"),
-    Tool(name="openapi_help", func=openapi_help, description="Help with OpenAPI usage"),
-    Tool(name="generate_payload", func=generate_payload, description="Generate JSON payloads"),
-    Tool(name="generate_sequence", func=generate_sequence, description="Determine API sequence"),
-    Tool(name="execute_workflow", func=execute_workflow, description="Execute an API workflow")
+    general_inquiry,
+    openapi_help,
+    generate_payload,
+    generate_sequence,
+    create_workflow,
+    execute_workflow,
 ]
 
-# Memory
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+# 2. Build a strict JSON system prompt
+system_template = """
+You are an OpenAPI assistant. Use ONLY the available tools to answer user queries.
+Respond strictly in JSON with keys: {"response": "...", "intent": "...", "query": "..."}.
+Do NOT add any extra commentary or summaries.
+"""
+system_msg = SystemMessagePromptTemplate.from_template(system_template)
+human_msg  = HumanMessagePromptTemplate.from_template("{input}")
+prompt     = ChatPromptTemplate.from_messages([system_msg, human_msg])
 
-# Language model
-llm = ChatOpenAI(temperature=0)
+# 3. Initialize LLM
+llm = ChatOpenAI(model_name="gpt-4", temperature=0)
 
-# LLM Chain with your prompt
-llm_chain = LLMChain(llm=llm, prompt=react_prompt)
-
-# Create custom ReAct agent
-agent = ReActAgent(
-    llm_chain=llm_chain,
+# 4. Create the JSON Chat Agent
+agent = create_json_chat_agent(
+    llm=llm,
     tools=tools,
-    stop=["\nObservation"],
-)
+    prompt=prompt,
+    stop_sequence=["Observation:"],  # prevent extra text
+)  # 
 
-# Create executor with memory
-agent_executor = AgentExecutor.from_agent_and_tools(
+# 5. Attach Memory
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)  # :contentReference[oaicite:3]{index=3}
+
+# 6. Build Executor with Memory
+agent_executor = AgentExecutor(
     agent=agent,
     tools=tools,
     memory=memory,
-    verbose=True,
+    verbose=True
 )
+
+# 7. Invoke the agent in a multi‑turn chat
+# First turn
+result1 = agent_executor.invoke({"input": "List all pets."})
+print(result1["output"])  # -> dict with response, intent, query
+
+# Second turn (memory retained)
+result2 = agent_executor.invoke({"input": "Now generate API execution graph for listing pets."})
+print(result2["output"])
