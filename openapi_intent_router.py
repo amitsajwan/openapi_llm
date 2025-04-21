@@ -1,154 +1,88 @@
-from typing import List, Dict, Any
-import json
-import asyncio
+from typing import Dict, Any
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.agents import create_react_agent, AgentExecutor
+from langchain.tools import Tool
 
-from langchain_openai import AzureChatOpenAI
-from langgraph.graph import StateGraph
-from langchain_core.prompts import PromptTemplate
-from langgraph.graph import State
+# 1. Load or define your OpenAPI spec
+openapi_spec: Dict[str, Any] = {
+    # Replace this with your actual OpenAPI specification
+}
 
+# 2. Define a custom ReAct prompt
+react_prompt = PromptTemplate.from_template("""
+Answer the following questions as best you can. You have access to the following tools:
 
-class RouterState(State):
-    query: str
-    intent: str = ""
-    history: List[Dict[str, str]] = []
+{tools}
 
+Use this format for your reasoning:
 
-class OpenAPIIntentRouterAgent:
-    def __init__(
-        self,
-        llm: AzureChatOpenAI,
-        openapi_spec: Dict[str, Any],
-    ):
-        self.llm = llm
-        self.openapi_spec = openapi_spec
-        self.graph = self._build_agentic_graph()
+Question: the input question you must answer
+Thought: you should think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
 
-    def _build_agentic_graph(self) -> StateGraph:
-        """Construct an agentic StateGraph with modular intent handlers."""
-        graph = StateGraph(RouterState)
+Begin!
 
-        # 1. Triage node: classify intent
-        async def classify_intent(state: RouterState) -> RouterState:
-            prompt = PromptTemplate.from_template(
-                """
-You are an AI assistant that classifies user queries into intents.
-Based on conversation history, choose one of:
-- general_inquiry
-- openapi_help
-- generate_payload
-- generate_sequence
-- create_workflow
-- execute_workflow
+Question: {input}
+Thought:{agent_scratchpad}
+""")
 
-Return JSON: {\"intent\": "intent_name"}
+# 3. Initialize the language model
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
 
-History: {history}
-Query: {query}
-"""
-            ).format(query=state.query, history=state.history)
+# 4. Define tool functions
+def general_inquiry_tool(user_input: str) -> str:
+    prompt = f"Answer the following general inquiry:\n\n{user_input}"
+    return llm.invoke(prompt)
 
-            response = await self.llm.ainvoke(prompt)
-            intent = json.loads(response).get("intent", "general_inquiry")
-            return RouterState(query=state.query, intent=intent, history=state.history)
+def openapi_help_tool(user_input: str) -> str:
+    prompt = f"Using the OpenAPI specification:\n\n{openapi_spec}\n\nAnswer the following question:\n\n{user_input}"
+    return llm.invoke(prompt)
 
-        # 2. Define specialized agents
-        async def general_inquiry_agent(state: RouterState) -> RouterState:
-            prompt = PromptTemplate.from_template(
-                """Answer general questions: {query}"""
-            ).format(query=state.query)
-            bot_reply = await self.llm.ainvoke(prompt)
-            return self._append_history(state, bot_reply)
+def generate_payload_tool(user_input: str) -> str:
+    prompt = f"Based on the OpenAPI specification:\n\n{openapi_spec}\n\nGenerate a JSON payload for the following request:\n\n{user_input}"
+    return llm.invoke(prompt)
 
-        async def openapi_help_agent(state: RouterState) -> RouterState:
-            prompt = PromptTemplate.from_template(
-                """Extract API details from spec and answer: {query}\nSpec: {spec}"""
-            ).format(query=state.query, spec=self.openapi_spec)
-            bot_reply = await self.llm.ainvoke(prompt)
-            return self._append_history(state, bot_reply)
+def generate_sequence_tool(user_input: str) -> str:
+    prompt = f"Using the OpenAPI specification:\n\n{openapi_spec}\n\nDetermine the sequence of API calls for the following task:\n\n{user_input}"
+    return llm.invoke(prompt)
 
-        async def generate_payload_agent(state: RouterState) -> RouterState:
-            prompt = PromptTemplate.from_template(
-                """Generate a valid JSON payload for endpoint '{query}' using spec: {spec}"""
-            ).format(query=state.query, spec=self.openapi_spec)
-            bot_reply = await self.llm.ainvoke(prompt)
-            return self._append_history(state, bot_reply)
+def create_workflow_tool(user_input: str) -> str:
+    prompt = f"Construct a workflow based on the OpenAPI specification:\n\n{openapi_spec}\n\nTask:\n\n{user_input}"
+    return llm.invoke(prompt)
 
-        async def generate_sequence_agent(state: RouterState) -> RouterState:
-            prompt = PromptTemplate.from_template(
-                """Determine API call sequence using spec: {spec}"""
-            ).format(spec=self.openapi_spec)
-            bot_reply = await self.llm.ainvoke(prompt)
-            return self._append_history(state, bot_reply)
+def execute_workflow_tool(user_input: str) -> str:
+    prompt = f"Execute the following workflow using the OpenAPI specification:\n\n{openapi_spec}\n\nWorkflow:\n\n{user_input}"
+    return llm.invoke(prompt)
 
-        async def create_workflow_agent(state: RouterState) -> RouterState:
-            prompt = PromptTemplate.from_template(
-                """Construct a LangGraph workflow from spec: {spec}"""
-            ).format(spec=self.openapi_spec)
-            bot_reply = await self.llm.ainvoke(prompt)
-            return self._append_history(state, bot_reply)
+# 5. Wrap tools with metadata
+tools = [
+    Tool(name="general_inquiry", func=general_inquiry_tool, description="Handle general inquiries."),
+    Tool(name="openapi_help", func=openapi_help_tool, description="Provide help regarding OpenAPI specifications."),
+    Tool(name="generate_payload", func=generate_payload_tool, description="Generate a payload based on input."),
+    Tool(name="generate_sequence", func=generate_sequence_tool, description="Generate a sequence based on input."),
+    Tool(name="create_workflow", func=create_workflow_tool, description="Create a workflow based on input."),
+    Tool(name="execute_workflow", func=execute_workflow_tool, description="Execute a workflow based on input."),
+]
 
-        async def execute_workflow_agent(state: RouterState) -> RouterState:
-            prompt = PromptTemplate.from_template(
-                """Execute the predefined workflow as instructed."""
-            ).format(spec=self.openapi_spec)
-            bot_reply = await self.llm.ainvoke(prompt)
-            return self._append_history(state, bot_reply)
+# 6. Create the ReAct agent
+agent = create_react_agent(llm=llm, tools=tools, prompt=react_prompt)
 
-        # 3. Routing function
-        def route_by_intent(state: RouterState) -> str:
-            return state.intent or "general_inquiry"
+# 7. Create the agent executor
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-        # Register nodes
-        graph.add_node("classify_intent", classify_intent)
-        graph.add_node("route_by_intent", route_by_intent)
-        graph.add_node("general_inquiry", general_inquiry_agent)
-        graph.add_node("openapi_help", openapi_help_agent)
-        graph.add_node("generate_payload", generate_payload_agent)
-        graph.add_node("generate_sequence", generate_sequence_agent)
-        graph.add_node("create_workflow", create_workflow_agent)
-        graph.add_node("execute_workflow", execute_workflow_agent)
+# 8. Handle user input
+def handle_user_input(user_input: str) -> Dict[str, Any]:
+    response = agent_executor.invoke({"input": user_input})
+    return {"response": response}
 
-        # Define flow
-        graph.set_entry_point("classify_intent")
-        graph.add_edge("classify_intent", "route_by_intent")
-        graph.add_conditional_edges(
-            "route_by_intent",
-            condition=route_by_intent,
-            path_map={
-                "general_inquiry": "general_inquiry",
-                "openapi_help": "openapi_help",
-                "generate_payload": "generate_payload",
-                "generate_sequence": "generate_sequence",
-                "create_workflow": "create_workflow",
-                "execute_workflow": "execute_workflow",
-            },
-        )
-
-        return graph.compile()
-
-    def _append_history(self, state: RouterState, bot_reply: str) -> RouterState:
-        new_hist = state.history + [{"user": state.query, "bot": bot_reply}]
-        return RouterState(query=state.query, intent=state.intent, history=new_hist)
-
-    async def handle_user_input(
-        self, user_input: str, history: List[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
-        if history is None:
-            history = []
-        state = RouterState(query=user_input, history=history)
-        updated_state = await self._invoke_graph(state)
-        latest = updated_state.history[-1]["bot"] if updated_state.history else ""
-        return {"response": latest, "history": updated_state.history}
-
-    async def _invoke_graph(self, state: RouterState) -> RouterState:
-        # Support async invoke if available
-        if callable(getattr(self.graph, "ainvoke", None)):
-            return await self.graph.ainvoke(state)
-        return self.graph.invoke(state)
-
-# Usage example (async context):
-# llm = AzureChatOpenAI(deployment_name="gpt4o", temperature=0)\#
-# router = OpenAPIIntentRouterAgent(llm, openapi_spec_dict)
+# Example usage:
+# result = handle_user_input("Generate API execution graph for petstore")
+# print(result["response"])
 # result = await router.handle_user_input("List all endpoints", [])
 # print(result)
