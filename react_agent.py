@@ -9,6 +9,8 @@ from langchain.prompts import SystemMessagePromptTemplate, HumanMessagePromptTem
 from langchain.memory import ConversationBufferMemory
 from langchain_community.agent_toolkits.openapi.toolkit import OpenAPIToolkit
 from langgraph.graph import StateGraph, State
+# agent_full.py
+
 from react_router import (
     make_tool,
     general_query_fn,
@@ -16,8 +18,6 @@ from react_router import (
     generate_payload_fn,
     generate_api_execution_graph_fn
 )
-
-
 
 class OpenApiReactRouterManager:
     def __init__(self, openapi_spec_path: str, llm):
