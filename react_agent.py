@@ -47,27 +47,16 @@ class OpenApiReactRouterManager:
 
         return tools
 
-    def _initialize_agent_executor(self):
-        system_message = SystemMessagePromptTemplate.from_template(
-            """
-You are an AI assistant for interacting with an OpenAPI. Use ONLY the available tools:
-{tools}
-
-Respond strictly in JSON with keys: response, intent, query.
-Do NOT add extra commentary.
-"""
-        )
-        human_message = HumanMessagePromptTemplate.from_template("{input}")
-        chat_prompt = ChatPromptTemplate.from_messages([
-            system_message,
-            human_message,
-            MessagesPlaceholder(variable_name="agent_scratchpad")
+        def _initialize_agent_executor(self):
+                prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a helpful assistant. Use the appropriate tools to assist with user queries."),
+            MessagesPlaceholder("chat_history", optional=True),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad")
         ])
-        json_agent = create_json_chat_agent(
-            llm=ChatOpenAI(model_name="gpt-4", temperature=0),
-            tools=self.tools,
-            prompt=chat_prompt,
-            stop_sequence=["Observation:"]
+
+        json_agent = create_tool_calling_agent(self.llm, self.tools, prompt)
+
         )
         return AgentExecutor(
             agent=json_agent,
