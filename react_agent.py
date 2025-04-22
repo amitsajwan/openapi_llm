@@ -39,9 +39,12 @@ class OpenApiReactRouterManager:
             make_tool(lambda x: general_query_fn(x, self.llm), "general_query", "Handle non‑API general questions."),
             make_tool(lambda x: openapi_help_fn(x, self.llm, self.spec_text), "openapi_help", "Explain OpenAPI endpoints."),
             make_tool(lambda x: generate_payload_fn(x, self.llm, self.spec_text), "generate_payload", "Create JSON payload for API."),
-            make_tool(lambda x: generate_api_execution_graph_fn(x, self.llm, self.spec_text), "generate_api_execution_graph", "Produce execution graph (nodes/edges/payloads)."),
+            make_tool(lambda x: generate_api_execution_graph_fn(x, self.llm, self.spec_text), "generate_api_execution_graph", "Generates an API execution graph... Produce execution graph (nodes/edges/payloads)."),
             *self.api_tools
         ]
+         
+]
+
         return tools
 
     def _initialize_agent_executor(self):
