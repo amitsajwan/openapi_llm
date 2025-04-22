@@ -2,14 +2,18 @@
 
 import json
 from pathlib import Path
+
 from langchain_openai.chat_models.azure import AzureChatOpenAI
 from langchain.chat_models import ChatOpenAI
 from langchain.agents import AgentExecutor, create_json_chat_agent
-from langchain.prompts import SystemMessagePromptTemplate, HumanMessagePromptTemplate, ChatPromptTemplate
+from langchain.prompts import (
+    SystemMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+    ChatPromptTemplate,
+    MessagesPlaceholder
+)
 from langchain.memory import ConversationBufferMemory
-from langchain_community.agent_toolkits.openapi.toolkit import OpenAPIToolkit
-from langgraph.graph import StateGraph, State
-# agent_full.py
+from langchain.integrations import OpenAPIToolkit
 
 from react_router import (
     make_tool,
@@ -41,41 +45,34 @@ class OpenApiReactRouterManager:
         return tools
 
     def _initialize_agent_executor(self):
-        system_message = SystemMessagePromptTemplate.from_template("""
+        system_message = SystemMessagePromptTemplate.from_template(
+            """
 You are an AI assistant for interacting with an OpenAPI. Use ONLY the available tools:
 {tools}
 
 Respond strictly in JSON with keys: response, intent, query.
 Do NOT add extra commentary.
-""")
+"""
+        )
         human_message = HumanMessagePromptTemplate.from_template("{input}")
-        chat_prompt = ChatPromptTemplate.from_messages([system_message, human_message])
-
+        chat_prompt = ChatPromptTemplate.from_messages([
+            system_message,
+            human_message,
+            MessagesPlaceholder(variable_name="agent_scratchpad")
+        ])
         json_agent = create_json_chat_agent(
             llm=ChatOpenAI(model_name="gpt-4", temperature=0),
             tools=self.tools,
             prompt=chat_prompt,
             stop_sequence=["Observation:"]
         )
-
-        agent_executor = AgentExecutor(
+        return AgentExecutor(
             agent=json_agent,
             tools=self.tools,
             memory=self.memory,
             verbose=True,
             handle_parsing_errors=True
         )
-        return agent_executor
 
-    def invoke(self, user_input: str):
+    def run(self, user_input: str):
         return self.agent_executor.invoke({"input": user_input})
-
-if __name__ == "__main__":
-    llm_azure = AzureChatOpenAI(
-        azure_deployment="gpt-35-turbo",
-        openai_api_version="2023-05-15",
-        temperature=0
-    )
-    manager = OpenApiReactRouterManager("openapi_spec.json", llm_azure)
-    response = manager.invoke("Generate API execution graph for pet creation")
-    print(json.dumps(response["output"], indent=2))
