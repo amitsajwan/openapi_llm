@@ -1,51 +1,31 @@
-from langchain.tools import tool
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import PromptTemplate
+# react_router.py
 
-# Initialize the language model
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
+import json
+from langchain.agents import Tool
 
-# Assume openapi_spec is a string containing your OpenAPI specification
-openapi_spec = "..."  # Replace with your actual OpenAPI spec
+def make_tool(func, name, desc):
+    return Tool.from_function(func=func, name=name, description=desc)
 
-@tool
-def general_inquiry(user_input: str) -> str:
-    prompt = PromptTemplate.from_template(
-        "Answer the following general inquiry:\n\n{user_input}"
+def general_query_fn(user_input: str, llm) -> dict:
+    resp = llm.invoke(f"Answer this general question:\n\n{user_input}")
+    return {"response": resp, "intent": "general_query", "query": user_input}
+
+def openapi_help_fn(user_input: str, llm, spec_text: str) -> dict:
+    resp = llm.invoke(
+        f"Using this OpenAPI spec:\n{spec_text}\n\nQuestion:\n{user_input}"
     )
-    return llm.invoke(prompt.format(user_input=user_input))
+    return {"response": resp, "intent": "openapi_help", "query": user_input}
 
-@tool
-def openapi_help(user_input: str) -> str:
-    prompt = PromptTemplate.from_template(
-        "Using the OpenAPI specification:\n\n{openapi_spec}\n\nAnswer the following question:\n\n{user_input}"
+def generate_payload_fn(user_input: str, llm, spec_text: str) -> dict:
+    resp = llm.invoke(
+        f"Generate a JSON payload for:\n{user_input}\n\nSpec:\n{spec_text}"
     )
-    return llm.invoke(prompt.format(openapi_spec=openapi_spec, user_input=user_input))
+    return {"response": resp, "intent": "generate_payload", "query": user_input}
 
-@tool
-def generate_payload(user_input: str) -> str:
-    prompt = PromptTemplate.from_template(
-        "Based on the OpenAPI specification:\n\n{openapi_spec}\n\nGenerate a JSON payload for the following request:\n\n{user_input}"
+def generate_api_execution_graph_fn(user_input: str, llm, spec_text: str) -> dict:
+    resp = llm.invoke(
+        "Determine the API execution graph:\n"
+        f"{user_input}\n\nSpec:\n{spec_text}\n\n"
+        "Return JSON with TextContent and Graph {nodes, edges}."
     )
-    return llm.invoke(prompt.format(openapi_spec=openapi_spec, user_input=user_input))
-
-@tool
-def generate_sequence(user_input: str) -> str:
-    prompt = PromptTemplate.from_template(
-        "Using the OpenAPI specification:\n\n{openapi_spec}\n\nDetermine the sequence of API calls for the following task:\n\n{user_input}"
-    )
-    return llm.invoke(prompt.format(openapi_spec=openapi_spec, user_input=user_input))
-
-@tool
-def create_workflow(user_input: str) -> str:
-    prompt = PromptTemplate.from_template(
-        "Construct a workflow based on the OpenAPI specification:\n\n{openapi_spec}\n\nTask:\n\n{user_input}"
-    )
-    return llm.invoke(prompt.format(openapi_spec=openapi_spec, user_input=user_input))
-
-@tool
-def execute_workflow(user_input: str) -> str:
-    prompt = PromptTemplate.from_template(
-        "Execute the following workflow using the OpenAPI specification:\n\n{openapi_spec}\n\nWorkflow:\n\n{user_input}"
-    )
-    return llm.invoke(prompt.format(openapi_spec=openapi_spec, user_input=user_input))
+    return {"response": resp, "intent": "generate_api_execution_graph", "query": user_input}
