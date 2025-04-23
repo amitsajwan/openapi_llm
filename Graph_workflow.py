@@ -180,3 +180,70 @@ Respond with valid JSON or "__approved__".
 async def fake_openai_call(prompt: str) -> str:
     print("LLM Prompt:", prompt)
     return "__approved__"
+
+
+
+
+import asyncio
+from langgraph.graph import Command
+from langgraph.checkpoint.memory import MemorySaver
+
+async def astream(self, initial_state=None, config=None):
+    # Prepare state and config
+    state_dict = (initial_state or GraphState()).dict()
+    cfg = config or {}
+    if "thread_id" not in cfg:
+        raise ValueError("Missing thread_id in config for checkpointing")
+
+    # Create the async generator once
+    gen = self.runner.astream(state_dict, cfg, stream_mode=["values","updates"])  # streaming setup&#8203;:contentReference[oaicite:5]{index=5}
+
+    # Outer loop to allow repeated interrupts
+    while True:
+        # Drive generator until exhaust or interrupt
+        async for stream_mode, step in gen:
+            # ---- human-in-the-loop interrupt ----
+            if stream_mode == "updates" and "_interrupt_" in step:
+                intr = step["_interrupt_"][0]
+                # send payload confirmation to UI
+                await self.websocket_callback(
+                    "payload_confirmation",
+                    {
+                        "interrupt_key": intr.ns[0],
+                        "prompt": intr.value.get("question"),
+                        "payload": intr.value.get("payload", {}),
+                    },
+                )  # interrupt messaging&#8203;:contentReference[oaicite:6]{index=6}
+
+                # wait for user resume, with timeout to avoid deadlock
+                try:
+                    resume_value = await asyncio.wait_for(
+                        self.resume_queue.get(),
+                        timeout=60  # seconds&#8203;:contentReference[oaicite:7]{index=7}
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError("User did not resume in time")  # fail-fast
+
+                # resume the graph from this interrupt
+                gen = self.runner.astream(
+                    Command(resume=resume_value),
+                    cfg,
+                    stream_mode=["values","updates"],
+                )  # reassign generator on resume&#8203;:contentReference[oaicite:8]{index=8}
+
+                break  # break async for → restart outer while
+
+            # ---- normal values processing ----
+            elif stream_mode == "values":
+                ops = step.get("operations", [])
+                if not ops:
+                    continue
+                op = ops[-1]
+                api_name = op["operationId"]
+                # … your metrics, logging, websocket updates …
+
+        else:
+            # async for exhausted normally → graph done → exit loop&#8203;:contentReference[oaicite:9]{index=9}
+            return
+
+        # if we broke due to interrupt, loop repeats; else we would have returned
