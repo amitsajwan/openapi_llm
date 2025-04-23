@@ -1,70 +1,29 @@
-# agent_full.py
+from langchain_core.tools import tool
+from langchain.agents.openai_functions_agent.base import OpenAIFunctionsAgent
+from langchain.agents import create_openai_functions_agent, AgentExecutor
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import MessagesPlaceholder
 
-import json
-from pathlib import Path
+# 1) Define function-tools
+@tool()
+def generate_api_execution_graph(spec_text: str) -> dict:
+    # … your existing graph-gen logic …
+    return {"nodes": nodes, "edges": edges}
 
-from langchain_openai.chat_models.azure import AzureChatOpenAI
-from langchain.chat_models import ChatOpenAI
-from langchain.agents import AgentExecutor, create_json_chat_agent
-from langchain.prompts import (
-    SystemMessagePromptTemplate,
-    HumanMessagePromptTemplate,
-    ChatPromptTemplate,
-    MessagesPlaceholder
-)
-from langchain.memory import ConversationBufferMemory
-from langchain.integrations import OpenAPIToolkit
-
-from react_router import (
-    make_tool,
-    general_query_fn,
-    openapi_help_fn,
-    generate_payload_fn,
-    generate_api_execution_graph_fn
+# 2) Build prompt
+prompt = OpenAIFunctionsAgent.create_prompt(
+    system_message="You are an API orchestration assistant.",
+    extra_prompt_messages=[MessagesPlaceholder("chat_history", optional=True)],
 )
 
-class OpenApiReactRouterManager:
-    def __init__(self, openapi_spec_path: str, llm):
-        self.spec_path = Path(openapi_spec_path)
-        self.llm = llm
-        self.spec_text = self.spec_path.read_text()
-        self.toolkit = OpenAPIToolkit.from_spec(self.spec_path, allow_dangerous_request=True)
-        self.api_tools = self.toolkit.get_tools()
-        self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-        self.tools = self._initialize_tools()
-        self.agent_executor = self._initialize_agent_executor()
+# 3) Instantiate agent
+llm = ChatOpenAI(model_name="gpt-4-0613", temperature=0)
+agent = create_openai_functions_agent(llm=llm, tools=[generate_api_execution_graph], prompt=prompt)
 
-    def _initialize_tools(self):
-        tools = [
-            make_tool(lambda x: general_query_fn(x, self.llm), "general_query", "Handle non‑API general questions."),
-            make_tool(lambda x: openapi_help_fn(x, self.llm, self.spec_text), "openapi_help", "Explain OpenAPI endpoints."),
-            make_tool(lambda x: generate_payload_fn(x, self.llm, self.spec_text), "generate_payload", "Create JSON payload for API."),
-            make_tool(lambda x: generate_api_execution_graph_fn(x, self.llm, self.spec_text), "generate_api_execution_graph", "Generates an API execution graph... Produce execution graph (nodes/edges/payloads)."),
-            *self.api_tools
-        ]
-         
-]
+# 4) Execute
+agent_executor = AgentExecutor(agent=agent, tools=[generate_api_execution_graph], verbose=True)
+resp = agent_executor.invoke({"input": "Build execution graph from this spec", "spec_text": petstore_yaml})
 
-        return tools
-
-        def _initialize_agent_executor(self):
-                prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful assistant. Use the appropriate tools to assist with user queries."),
-            MessagesPlaceholder("chat_history", optional=True),
-            ("human", "{input}"),
-            MessagesPlaceholder("agent_scratchpad")
-        ])
-
-        json_agent = create_tool_calling_agent(self.llm, self.tools, prompt)
-
-        )
-        return AgentExecutor(
-            agent=json_agent,
-            tools=self.tools,
-            memory=self.memory,
-            verbose=True,
-            handle_parsing_errors=True
-        )
-
-    def run(self, user_input: str):
-        return self.agent_executor.invoke({"input": user_input})
+# 5) Raw JSON result
+graph = resp["output"]["content"]
+print("Graph JSON:", graph)
