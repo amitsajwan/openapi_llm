@@ -1,29 +1,55 @@
-from langchain_core.tools import tool
-from langchain.agents.openai_functions_agent.base import OpenAIFunctionsAgent
-from langchain.agents import create_openai_functions_agent, AgentExecutor
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import MessagesPlaceholder
+from langchain.agents import AgentExecutor, create_openai_functions_agent
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.memory import ConversationBufferMemory
+from langchain_core.runnables import Runnable
+from langchain.tools import tool
 
-# 1) Define function-tools
-@tool()
-def generate_api_execution_graph(spec_text: str) -> dict:
-    # … your existing graph-gen logic …
-    return {"nodes": nodes, "edges": edges}
+class OpenAPIDirectRouterManager:
+    def __init__(self, spec_text: str, llm, openapi_spec_path: str):
+        self.spec_text = spec_text
+        self.llm = llm
+        self.spec_path = openapi_spec_path
 
-# 2) Build prompt
-prompt = OpenAIFunctionsAgent.create_prompt(
-    system_message="You are an API orchestration assistant.",
-    extra_prompt_messages=[MessagesPlaceholder("chat_history", optional=True)],
-)
+        # Initialize OpenAPI tools (assume your custom OpenAPIToolkit exists)
+        self.toolkit = OpenAPIToolkit.from_spec(self.spec_path, allow_dangerous_requests=True)
+        self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        self.tools = self._init_llmtools()
+        self.agent_executor = self._initialize_agent_executor()
 
-# 3) Instantiate agent
-llm = ChatOpenAI(model_name="gpt-4-0613", temperature=0)
-agent = create_openai_functions_agent(llm=llm, tools=[generate_api_execution_graph], prompt=prompt)
+    def _init_llmtools(self):
+        return [
+            tool("general_query", lambda x: general_query_fn(x, self.llm), return_direct=True)(description="Handle non-API general questions."),
+            tool("general_help", lambda x: general_help_fn(x, self.llm, self.spec_text), return_direct=True)(description="Explain OpenAPI endpoints."),
+            tool("generate_payload", lambda x: generate_payload_fn(x, self.llm, self.spec_text), return_direct=True)(description="Generate JSON payload for API."),
+            tool("generate_api_execution_graph", lambda x: generate_api_execution_graph_fn(x, self.llm, self.spec_text), return_direct=True)(description="Generate execution graph from OpenAPI."),
+            tool("execute_workflow", lambda x: execute_workflow_fn(x, self.llm, self.spec_text), return_direct=True)(description="Execute workflow steps based on graph."),
+        ]
 
-# 4) Execute
-agent_executor = AgentExecutor(agent=agent, tools=[generate_api_execution_graph], verbose=True)
-resp = agent_executor.invoke({"input": "Build execution graph from this spec", "spec_text": petstore_yaml})
+    def _initialize_agent_executor(self):
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a tool selector assistant. Use the appropriate tools to assist with user queries.\n"
+                       "Don’t modify the tool's output. Pass user's query to the best tool.\n"
+                       "The tool will return the final response. Format: {{\"response\": ..., \"intent\": ..., \"query\": user_input}}"),
+            MessagesPlaceholder(variable_name="chat_history", optional=True),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad")
+        ])
 
-# 5) Raw JSON result
-graph = resp["output"]["content"]
-print("Graph JSON:", graph)
+        agent = create_openai_functions_agent(
+            llm=self.llm,
+            tools=self.tools,
+            prompt=prompt
+        )
+
+        return AgentExecutor(
+            agent=agent,
+            tools=self.tools,
+            memory=self.memory,
+            verbose=True,
+            handle_parsing_errors=True,
+            return_intermediate_steps=False
+        )
+
+    async def handle_user_input(self, user_input: str) -> str:
+        result = await self.agent_executor.ainvoke({"input": user_input})
+        return result["output"]
