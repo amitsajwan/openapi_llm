@@ -189,23 +189,26 @@ from langgraph.graph import Command
 from langgraph.checkpoint.memory import MemorySaver
 
 async def astream(self, initial_state=None, config=None):
-    # Prepare state and config
+    # 1) prepare state & config
     state_dict = (initial_state or GraphState()).dict()
     cfg = config or {}
     if "thread_id" not in cfg:
         raise ValueError("Missing thread_id in config for checkpointing")
 
-    # Create the async generator once
-    gen = self.runner.astream(state_dict, cfg, stream_mode=["values","updates"])  # streaming setup&#8203;:contentReference[oaicite:5]{index=5}
+    # 2) get the underlying LangGraph async generator
+    gen = self.runner.astream(
+        state_dict,
+        cfg,
+        stream_mode=["values", "updates"],
+    )
 
-    # Outer loop to allow repeated interrupts
+    # 3) outer loop for handling interrupts multiple times
     while True:
-        # Drive generator until exhaust or interrupt
+        # drive until exhaust or interrupt
         async for stream_mode, step in gen:
-            # ---- human-in-the-loop interrupt ----
+            # --- human-in-the-loop interrupt event ---
             if stream_mode == "updates" and "_interrupt_" in step:
                 intr = step["_interrupt_"][0]
-                # send payload confirmation to UI
                 await self.websocket_callback(
                     "payload_confirmation",
                     {
@@ -213,37 +216,60 @@ async def astream(self, initial_state=None, config=None):
                         "prompt": intr.value.get("question"),
                         "payload": intr.value.get("payload", {}),
                     },
-                )  # interrupt messaging&#8203;:contentReference[oaicite:6]{index=6}
-
-                # wait for user resume, with timeout to avoid deadlock
+                )
+                # wait (with timeout) for user resume
                 try:
                     resume_value = await asyncio.wait_for(
                         self.resume_queue.get(),
-                        timeout=60  # seconds&#8203;:contentReference[oaicite:7]{index=7}
+                        timeout=60
                     )
                 except asyncio.TimeoutError:
-                    raise RuntimeError("User did not resume in time")  # fail-fast
-
-                # resume the graph from this interrupt
+                    raise RuntimeError("User did not resume in time")
+                # resume the generator from this interrupt
                 gen = self.runner.astream(
                     Command(resume=resume_value),
                     cfg,
-                    stream_mode=["values","updates"],
-                )  # reassign generator on resume&#8203;:contentReference[oaicite:8]{index=8}
+                    stream_mode=["values", "updates"],
+                )
+                break  # break async for → go back to while True
 
-                break  # break async for → restart outer while
-
-            # ---- normal values processing ----
+            # --- normal values event: run API, collect metrics, send UI update ---
             elif stream_mode == "values":
                 ops = step.get("operations", [])
                 if not ops:
                     continue
                 op = ops[-1]
                 api_name = op["operationId"]
-                # … your metrics, logging, websocket updates …
+                # … your existing metrics + websocket logic …
+
+                # emit the new state so caller’s `async for` can see it
+                yield GraphState(**step.get("state", {}))
 
         else:
-            # async for exhausted normally → graph done → exit loop&#8203;:contentReference[oaicite:9]{index=9}
+            # async for drained without break → graph complete → exit
             return
 
-        # if we broke due to interrupt, loop repeats; else we would have returned
+
+
+
+
+import asyncio
+
+async def run_workflow(workflow):
+    # Assume workflow is an instance of your LangGraphWorkflow
+    # and you have already set workflow.resume_queue and websocket_callback.
+    config = {"thread_id": "test-thread-1"}
+    # Iterate until the workflow completes or raises
+    async for state in workflow.astream(initial_state=None, config=config):
+        # This block runs after each API node completes
+        print("Received state update:", state)
+    print("Workflow has completed.")
+
+if __name__ == "__main__":
+    # Example of starting the async run
+    from your_module import LangGraphWorkflow, APIExecutor
+
+    api_executor = APIExecutor(base_url="https://petstore.swagger.io/v2")
+    workflow = LangGraphWorkflow(graph_def, api_executor, websocket_callback)
+    # Kick off the asyncio event loop
+    asyncio.run(run_workflow(workflow))
