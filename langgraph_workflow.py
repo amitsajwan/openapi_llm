@@ -1,86 +1,67 @@
-from typing import Optional, Dict, Any
-import asyncio
-from langgraph.types import Command, interrupt
-from langgraph.graph import GraphState
+state = initial_state or GraphState()
+state_dict = state.dict()
+cfg = config or {}
 
-async def astream(self,
-                  initial_state: Optional[GraphState] = None,
-                  config: Optional[Dict[str, Any]] = None):
-    """
-    Stream the graph execution, handle multiple human-in-the-loop interrupts,
-    and ensure progression to subsequent nodes by updating state on each resume.
-    """
-    # 1. Prepare initial state and config
-    state = (initial_state or GraphState())
-    state_dict = state.dict()
-    cfg = config or {}
-    if "thread_id" not in cfg:
-        raise ValueError("Missing thread_id in config for checkpointing")
+# Validate required checkpoint config
+if "thread_id" not in cfg:
+    raise ValueError("Missing thread_id in config for checkpointing")
 
-    # 2. Start streaming execution
-    gen = self.runner.astream(state_dict, cfg, stream_mode="updates")
+# Start astream only once
+gen = self.runner.astream(state_dict, cfg, stream_mode="updates")
 
-    while True:
-        try:
-            async for mode, step in gen:
-                # 3. Handle human-in-the-loop interrupt
-                if mode == "updates" and "_interrupt_" in step:
-                    intr = step["_interrupt_"][0]
-                    # Send payload for confirmation
-                    prompt = intr.value.get("question") or (
-                        f"Operation: {intr.value['operationId']} "
-                        f"Method: {intr.value['method']} "
-                        f"Path: {intr.value['path']} – confirm payload")
-                    await self.websocket_callback("payload_confirmation", {
-                        "interrupt_key": intr.ns,
-                        "prompt": prompt,
-                        "payload": intr.value.get("payload", {}),
-                    })  
+while True:
+    try:
+        step = await gen.__anext__()  # Get next update
 
-                    # 4. Wait for user to resume with a value
-                    try:
-                        resume_value = await asyncio.wait_for(
-                            self._resume_queue.get(), timeout=60
-                        )
-                    except asyncio.TimeoutError:
-                        raise RuntimeError("User did not resume in time")
+        # Handle human-in-the-loop interrupt
+        if "loop_interrupt" in step:
+            interrupt = step["loop_interrupt"]
 
-                    # 5. Update graph state with the resume value
-                    #    Keyed by the interrupt namespace so next .astream moves on
-                    state_dict[intr.ns] = resume_value
-                    gen = self.runner.astream(state_dict, cfg, stream_mode="updates")  # reset generator
-                    break  # restart async-for on updated state
+            if interrupt.get("type") in ("payload_confirmation", "question"):
+                op_id = interrupt["value"].get("operation_id", "")
+                path = interrupt["value"].get("path", "")
+                method = interrupt["value"].get("method", "").upper()
 
-                # 6. Process normal step outputs
-                for _, value in step.items():
-                    for op in value["operations"]:
-                        status = op["result"].get("status_code")
-                        success = status == 200
-                        exec_time = op["result"].get("execution_time")
-                        # record metrics
-                        self.api_latency_seconds.labels(
-                            name=op["result"].get("api", "")
-                        ).observe(exec_time)  :contentReference[oaicite:1]{index=1}
+                await self.websocket_callback(
+                    "payload_confirmation",
+                    {
+                        "question": interrupt["value"].get("question", ""),
+                        "operation_id": op_id,
+                        "path": path,
+                        "method": method,
+                        "payload": interrupt["value"].get("payload", {}),
+                    },
+                )
 
-                        # send user-friendly update
-                        msg = (
-                            f"Operation: {op['operationId']} "
-                            f"Status: {'✅ Success' if success else '❌ Failure'}\n"
-                            f"Path: {op['result'].get('path','')}  "
-                            f"Code: {status}  "
-                            f"Time: {exec_time}s"
-                        )
-                        await self.websocket_callback("api_response", {"message": msg})
-                        if not success:
-                            await self.websocket_callback(
-                                "workflow_complete",
-                                {"message": "API call failed. Check logs."}
-                            )
-                            return
-        except StopAsyncIteration:
-            # 7. Completed all nodes
-            await self.websocket_callback("workflow_complete", {
-                "message": "Workflow execution completed."
-            })
-            break
-            
+                try:
+                    resume_value = await asyncio.wait_for(
+                        self._resume_queue.get(), timeout=60
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError("User did not resume in time")
+
+                await gen.asend(resume_value)  # Resume the same generator
+
+                continue  # Continue to next loop after resume
+
+        # Process step outputs
+        for val in step.get("items", []):
+            for op in val.get("operations", []):
+                status = op.get("result", {}).get("status_code", 0)
+                success = status < 300
+                exec_time = op.get("result", {}).get("execution_time", 0)
+
+                msg = f"{op.get('method')} {op.get('path')} -> {status} [{exec_time}ms]"
+
+                await self.websocket_callback("api_response", {"message": msg})
+
+                if not success:
+                    await self.websocket_callback(
+                        "api_error",
+                        {"message": "API call failed. Check logs."},
+                    )
+                    return
+
+    except StopAsyncIteration:
+        await self.websocket_callback("workflow_complete", {"message": "Execution complete."})
+        break
