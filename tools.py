@@ -96,7 +96,14 @@ def execute_workflow_fn(_: str, llm) -> Dict[str, Any]:
     """Execute workflow based on the current graph JSON."""
     try:
         # Step 1: Retrieve the current graph JSON
-        graph_json = get_execution_graph_json_fn()
+        graph_json = get_execution_graph_json_fn(_: "")
+
+        if not graph_json or not graph_json.get("nodes") or not graph_json.get("edges"):
+            return {
+                "intent": "execute_workflow",
+                "user_input": "",
+                "response": "Error: Graph JSON is empty or incomplete. Cannot execute workflow."
+            }
 
         # Step 2: Simulate workflow execution
         # Replace this with your actual workflow execution logic
@@ -120,3 +127,8 @@ def execute_workflow_fn(_: str, llm) -> Dict[str, Any]:
             "user_input": "",
             "response": f"Error executing workflow: {str(e)}"
         }
+        
+@tool
+def get_execution_graph_json_fn(_: str = "") -> dict:
+    """Return the full graph with nodes and edges as JSON."""
+    return _graph_state
