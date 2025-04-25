@@ -21,17 +21,19 @@ def generate_payload_fn(endpoint: str, schema: dict) -> dict:
     return {key: f"example_{key}" for key in schema.keys()}
 
 @tool
-def generate_api_execution_graph_fn(openapi_yaml: str) -> dict:
-    """Produce a dependency-aware execution graph (nodes & edges) from OpenAPI spec."""
-    # Example graph generation
-    _graph_state["nodes"] = [
-        {"operationId": "createPet"},
-        {"operationId": "getPetById"}
-    ]
-    _graph_state["edges"] = [
-        {"from": "createPet", "to": "getPetById"}
-    ]
-    return _graph_state
+def describe_execution_plan_fn(graph: dict) -> str:
+    """Describe the planned execution of the API calls based on the graph."""
+    prompt = f"""
+Given this API execution graph (nodes and edges), explain the sequence of execution
+in natural language. Be concise but clear. Mention the order, any dependencies,
+and describe what each step does.
+
+Graph:
+{json.dumps(graph)}
+"""
+    return llm.invoke(prompt).content
+
+
 
 @tool
 def add_edge_fn(user_instruction: str) -> dict:
@@ -80,3 +82,46 @@ def validate_graph_fn(graph: dict) -> str:
         return f"Warning: Unreachable nodes found: {unreachable}"
 
     return "Graph is valid."
+
+@tool
+def verify_graph_fn(graph: dict) -> dict:
+    """Validate the graph and suggest corrections if issues exist."""
+    import networkx as nx
+
+    G = nx.DiGraph()
+    for node in graph.get("nodes", []):
+        G.add_node(node["operationId"])
+    for edge in graph.get("edges", []):
+        G.add_edge(edge["from"], edge["to"])
+
+    issues = []
+    if not nx.is_directed_acyclic_graph(G):
+        issues.append("Graph contains cycles.")
+    if not nx.is_weakly_connected(G):
+        issues.append("Graph is disconnected.")
+
+    unreachable = [n for n in G.nodes if nx.in_degree(G, n) == 0]
+    if unreachable:
+        issues.append(f"Unreachable nodes: {unreachable}")
+
+    if not issues:
+        return {"status": "valid", "message": "Graph OK"}
+
+    # Ask LLM for fix suggestions
+    prompt = f"""
+This API execution graph has validation issues:
+{issues}
+
+Graph:
+{json.dumps(graph)}
+
+Suggest how to fix the graph. Output fixed version in JSON with nodes and edges.
+"""
+    res = llm.invoke(prompt).content
+    fixed_graph = json.loads(res)
+
+    return {
+        "status": "invalid",
+        "message": "; ".join(issues),
+        "suggested_fix": fixed_graph
+    }
