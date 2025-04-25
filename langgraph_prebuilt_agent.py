@@ -1,3 +1,5 @@
+# File: langgraph_prebuilt_agent.py
+from langchain_core.messages import AIMessage
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 from langchain.chat_models import ChatOpenAI
@@ -7,61 +9,70 @@ from tools import (
     generate_payload_fn,
     generate_api_execution_graph_fn,
     add_edge_fn,
+    validate_graph_fn,
     describe_execution_plan_fn,
     get_execution_graph_json_fn,
-    validate_graph_fn,
-    execute_workflow_fn,  # Add this tool
 )
 
 class OpenApiReactRouterManager:
-    def __init__(self, spec_text: str, llm):
+    def __init__(self, spec_text: str, llm=None):
         self.spec_text = spec_text
-        self.llm = llm
-        self.execution_graph = None
+        self.llm = llm or ChatOpenAI(model="gpt-4", temperature=0)
         self.agent = self._initialize_agent()
 
     def _initialize_agent(self):
         tools = [
-            lambda query: general_query_fn(query, self.llm),
-            lambda question: openapi_help_fn(question, self.spec_text, self.llm),
-            lambda endpoint, schema: generate_payload_fn(endpoint, schema, self.llm),
-            lambda user_input: generate_api_execution_graph_fn(user_input, self.spec_text, self.llm),
-            lambda user_instruction: add_edge_fn(user_instruction, self.llm),
-            lambda graph: describe_execution_plan_fn(graph, self.llm),
-            lambda _: get_execution_graph_json_fn(),
-            lambda graph: validate_graph_fn(graph, self.llm),
-            lambda _: execute_workflow_fn("", self.llm),  # Add execute workflow tool
+            general_query_fn,
+            openapi_help_fn,
+            generate_payload_fn,
+            generate_api_execution_graph_fn,
+            add_edge_fn,
+            validate_graph_fn,
+            describe_execution_plan_fn,
+            get_execution_graph_json_fn,
         ]
+                # build a custom ReAct-style prompt including the OpenAPI spec
+        from langchain_core.prompts import PromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+        # System instruction for the agent
+        system_template = """
+You are an expert API testing assistant. You have access to tools to inspect OpenAPI specifications, generate payloads, build and modify execution graphs, validate graphs, and describe execution plans.
+Always think step-by-step, use the ReAct format (Thought, Action, Action Input, Observation), and refer to the provided OpenAPI spec.
+OpenAPI Spec:
+{openapi_yaml}
+"""
+        system_prompt = SystemMessagePromptTemplate.from_template(system_template)
+        # Human input template
+        human_prompt = HumanMessagePromptTemplate.from_template("User: {input}")
+        custom_prompt = PromptTemplate.from_messages([system_prompt, human_prompt])
+
         return create_react_agent(
             llm=self.llm,
             tools=tools,
-            checkpointer=MemorySaver()
+            prompt=custom_prompt,
+            checkpointer=MemorySaver(),
+        ),
         )
 
     def run(self, user_input: str, thread_id: str = "default-thread") -> str:
-        try:
-            result = self.agent.invoke(
-                {"input": user_input},
-                config={"configurable": {"thread_id": thread_id}}
-            )
-            return result.get("response", "No response")
-        except Exception as e:
-            return f"Error running agent: {str(e)}"
+        inputs = {"input": user_input, "openapi_yaml": self.spec_text}
+        result = self.agent.invoke(
+            inputs,
+            config={"configurable": {"thread_id": thread_id}}
+        )
+        # Extract AIMessage content
+        if isinstance(result, dict) and "messages" in result:
+            for m in result["messages"]:
+                if isinstance(m, AIMessage):
+                    return m.content
+        # Fallbacks
+        return result.get("response") or result.get("output") or str(result)
 
-    def handle_user_message(self, user_input: str, thread_id: str) -> str:
-        try:
-            out = self.agent.invoke(
-                {"input": user_input},
-                config={"configurable": {"thread_id": thread_id}}
-            )
-            return out.get("response", "No response")
-        except Exception as e:
-            return f"Error handling user message: {str(e)}"
-
+# Example usage
 if __name__ == "__main__":
-    tid = "user-session-1"
-    llm = ChatOpenAI()
-    manager = OpenApiReactRouterManager(spec_text="Your API spec here", llm=llm)
-
-    # Test the execute workflow intent
-    print(manager.handle_user_message("Execute workflow based on current graph", tid))
+    spec = open("openapi.yaml").read()
+    router = OpenApiReactRouterManager(spec_text=spec)
+    print(router.run("Generate API execution graph for this spec", "thread1"))
+    print(router.run("Add an edge from createPet to getPetById", "thread1"))
+    print(router.run("Validate the graph", "thread1"))
+    print(router.run("Describe the execution plan", "thread1"))
+    print(router.run("Give me the graph as JSON", "thread1"))
