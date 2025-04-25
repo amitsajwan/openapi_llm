@@ -9,6 +9,7 @@ from tools import (
     add_edge_fn,
     describe_execution_plan_fn,
     get_execution_graph_json_fn,
+    validate_graph_fn,  # Added missing import
 )
 
 class OpenApiReactRouterManager:
@@ -26,8 +27,8 @@ class OpenApiReactRouterManager:
             generate_api_execution_graph_fn,
             add_edge_fn,
             describe_execution_plan_fn,
-            validate_graph_fn,
-            get_graph_json_fn
+            validate_graph_fn,  # Ensure this function is available
+            get_graph_json_fn,  # Ensure this function is available
         ]
         return create_react_agent(
             llm=self.llm,
@@ -42,29 +43,19 @@ class OpenApiReactRouterManager:
         )
         return result.get("response", "No response")
 
+    def handle_user_message(self, user_input: str, thread_id: str) -> str:
+        # Fixed the reference to self.agent
+        out = self.agent.invoke(
+            {"input": user_input},
+            config={"configurable": {"thread_id": thread_id}}
+        )
+        return out.get("response", "")
 
-    all_tools = [
-        general_query_fn, 
-        openapi_help_fn,
-        generate_payload_fn,
-        generate_api_execution_graph_fn,
-        add_edge_fn,
-        describe_execution_plan_fn,
-        get_execution_graph_json_fn,
-    ]
-
-
-  def handle_user_message(user_input: str, thread_id: str) -> str:
-      out = agent.invoke(
-          {"input": user_input},
-          config={"configurable": {"thread_id": thread_id}}
-      )
-      return out.get("response", "")
-  
-  if __name__ == "__main__":
-      tid = "user-session-1"
-      print(handle_user_message("Generate API execution graph from this spec", tid))
-      print(handle_user_message("Add an edge from 'getPetById' to 'deletePet'", tid))
-      print(handle_user_message("Describe the plan", tid))
-      print(handle_user_message("Give me the execution graph in JSON", tid))
-  
+if __name__ == "__main__":
+    # Sample usage
+    tid = "user-session-1"
+    manager = OpenApiReactRouterManager(spec_text="Your API spec here", llm=ChatOpenAI())
+    print(manager.handle_user_message("Generate API execution graph from this spec", tid))
+    print(manager.handle_user_message("Add an edge from 'getPetById' to 'deletePet'", tid))
+    print(manager.handle_user_message("Describe the plan", tid))
+    print(manager.handle_user_message("Give me the execution graph in JSON", tid))
