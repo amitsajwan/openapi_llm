@@ -21,14 +21,14 @@ class OpenApiReactRouterManager:
 
     def _initialize_agent(self):
         tools = [
-            general_query_fn,
-            openapi_help_fn,
-            generate_payload_fn,
-            generate_api_execution_graph_fn,
-            add_edge_fn,
-            describe_execution_plan_fn,
-            validate_graph_fn,
-            get_execution_graph_json_fn,
+            lambda query: general_query_fn(query, self.llm),
+            lambda question: openapi_help_fn(question, self.spec_text, self.llm),
+            lambda endpoint, schema: generate_payload_fn(endpoint, schema, self.llm),
+            lambda user_input: generate_api_execution_graph_fn(user_input, self.spec_text, self.llm),
+            lambda user_instruction: add_edge_fn(user_instruction, self.llm),
+            lambda graph: describe_execution_plan_fn(graph, self.llm),
+            lambda _: get_execution_graph_json_fn(),
+            lambda graph: validate_graph_fn(graph, self.llm),
         ]
         return create_react_agent(
             llm=self.llm,
@@ -57,9 +57,9 @@ class OpenApiReactRouterManager:
             return f"Error handling user message: {str(e)}"
 
 if __name__ == "__main__":
-    # Sample usage
     tid = "user-session-1"
-    manager = OpenApiReactRouterManager(spec_text="Your API spec here", llm=ChatOpenAI())
+    llm = ChatOpenAI()
+    manager = OpenApiReactRouterManager(spec_text="Your API spec here", llm=llm)
     print(manager.handle_user_message("Generate API execution graph from this spec", tid))
     print(manager.handle_user_message("Add an edge from 'getPetById' to 'deletePet'", tid))
     print(manager.handle_user_message("Describe the plan", tid))
