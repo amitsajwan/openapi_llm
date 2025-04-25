@@ -1,6 +1,3 @@
-from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
-from langchain.chat_models import ChatOpenAI
 from tools import (
     general_query_fn,
     openapi_help_fn,
@@ -10,6 +7,7 @@ from tools import (
     describe_execution_plan_fn,
     get_execution_graph_json_fn,
     validate_graph_fn,
+    execute_workflow_fn,  # Add this tool
 )
 
 class OpenApiReactRouterManager:
@@ -29,6 +27,7 @@ class OpenApiReactRouterManager:
             lambda graph: describe_execution_plan_fn(graph, self.llm),
             lambda _: get_execution_graph_json_fn(),
             lambda graph: validate_graph_fn(graph, self.llm),
+            lambda _: execute_workflow_fn("", self.llm),  # Add execute workflow tool
         ]
         return create_react_agent(
             llm=self.llm,
@@ -60,7 +59,6 @@ if __name__ == "__main__":
     tid = "user-session-1"
     llm = ChatOpenAI()
     manager = OpenApiReactRouterManager(spec_text="Your API spec here", llm=llm)
-    print(manager.handle_user_message("Generate API execution graph from this spec", tid))
-    print(manager.handle_user_message("Add an edge from 'getPetById' to 'deletePet'", tid))
-    print(manager.handle_user_message("Describe the plan", tid))
-    print(manager.handle_user_message("Give me the execution graph in JSON", tid))
+
+    # Test the execute workflow intent
+    print(manager.handle_user_message("Execute workflow based on current graph", tid))
