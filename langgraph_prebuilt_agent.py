@@ -9,7 +9,7 @@ from tools import (
     add_edge_fn,
     describe_execution_plan_fn,
     get_execution_graph_json_fn,
-    validate_graph_fn,  # Added missing import
+    validate_graph_fn,
 )
 
 class OpenApiReactRouterManager:
@@ -27,8 +27,8 @@ class OpenApiReactRouterManager:
             generate_api_execution_graph_fn,
             add_edge_fn,
             describe_execution_plan_fn,
-            validate_graph_fn,  # Ensure this function is available
-            get_graph_json_fn,  # Ensure this function is available
+            validate_graph_fn,
+            get_execution_graph_json_fn,
         ]
         return create_react_agent(
             llm=self.llm,
@@ -37,19 +37,24 @@ class OpenApiReactRouterManager:
         )
 
     def run(self, user_input: str, thread_id: str = "default-thread") -> str:
-        result = self.agent.invoke(
-            {"input": user_input},
-            config={"configurable": {"thread_id": thread_id}}
-        )
-        return result.get("response", "No response")
+        try:
+            result = self.agent.invoke(
+                {"input": user_input},
+                config={"configurable": {"thread_id": thread_id}}
+            )
+            return result.get("response", "No response")
+        except Exception as e:
+            return f"Error running agent: {str(e)}"
 
     def handle_user_message(self, user_input: str, thread_id: str) -> str:
-        # Fixed the reference to self.agent
-        out = self.agent.invoke(
-            {"input": user_input},
-            config={"configurable": {"thread_id": thread_id}}
-        )
-        return out.get("response", "")
+        try:
+            out = self.agent.invoke(
+                {"input": user_input},
+                config={"configurable": {"thread_id": thread_id}}
+            )
+            return out.get("response", "No response")
+        except Exception as e:
+            return f"Error handling user message: {str(e)}"
 
 if __name__ == "__main__":
     # Sample usage
