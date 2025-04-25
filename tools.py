@@ -91,3 +91,32 @@ def generate_api_execution_graph_fn(user_input: str, spec_text: str, llm) -> Dic
             "user_input": user_input,
             "response": {"error": str(e), "message": "Failed to generate execution graph"}
         }
+@tool
+def execute_workflow_fn(_: str, llm) -> Dict[str, Any]:
+    """Execute workflow based on the current graph JSON."""
+    try:
+        # Step 1: Retrieve the current graph JSON
+        graph_json = get_execution_graph_json_fn()
+
+        # Step 2: Simulate workflow execution
+        # Replace this with your actual workflow execution logic
+        prompt = f"""
+        Based on the following API execution graph, simulate executing the workflow step by step:
+        {json.dumps(graph_json, indent=2)}
+
+        Provide the output of each step in a concise format.
+        """
+        response = llm.invoke(prompt)
+
+        # Step 3: Return the result
+        return {
+            "intent": "execute_workflow",
+            "user_input": "",
+            "response": response.content
+        }
+    except Exception as e:
+        return {
+            "intent": "execute_workflow",
+            "user_input": "",
+            "response": f"Error executing workflow: {str(e)}"
+        }
