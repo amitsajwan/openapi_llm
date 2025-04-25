@@ -125,3 +125,51 @@ Suggest how to fix the graph. Output fixed version in JSON with nodes and edges.
         "message": "; ".join(issues),
         "suggested_fix": fixed_graph
     }
+
+
+
+@tool
+def generate_api_execution_graph_fn(user_input: str, spec_text: str) -> dict:
+    """
+    Generates an API execution graph (nodes & edges) from OpenAPI spec and user input.
+    """
+    prompt_template = f"""
+You are an expert API testing assistant. Use the following OpenAPI spec:
+
+{spec_text}
+
+{user_input}
+
+Generate an API execution graph in JSON format with 'nodes' and 'edges'.
+
+Follow these rules:
+1. POST must come before GET/PUT/DELETE for the same resource.
+2. Add 'verify' nodes after every POST/PUT.
+3. Only parallel execution if operations are independent.
+4. Use operationId from the OpenAPI spec as node identifiers.
+5. Resolve $ref, enums, and nested schemas for realistic payloads.
+
+Return output like:
+{{
+  "nodes": [
+    {{
+      "operationId": "createPet",
+      "method": "POST",
+      "path": "/pets",
+      "description": "Create a new pet",
+      "payload": {{ "name": "Fido", "type": "dog" }}
+    }},
+    ...
+  ],
+  "edges": [
+    {{ "from_node": "createPet", "to_node": "verifyCreatePet" }},
+    ...
+  ]
+}}
+"""
+    response = llm.invoke(prompt_template)
+    return {
+        "response": response,
+        "intent": "execute workflow",
+        "query": user_input
+    }
