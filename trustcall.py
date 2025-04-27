@@ -49,3 +49,19 @@ def create_extractor(schema_model):
     logging.info(f"Creating extractor for {schema_model.__name__}")
     parser = OutputParser(pydantic_schema=schema_model)
     return parser
+
+
+from trustcall import trustcall_safe, create_extractor
+
+def call_llm(formatted_prompt: str, llm) -> Api_execution_graph:
+    # inside your method:
+    
+    logging.info("Calling LLM...")
+    response = await trustcall_safe(formatted_prompt, llm)
+    
+    if "error" not in response:
+        extractor = create_extractor(Api_execution_graph)
+        parsed_response = extractor.parse(response)
+    else:
+        # handle error
+        parsed_response = Api_execution_graph(error=response["error"])
