@@ -1,14 +1,12 @@
-from langchain_core.messages import AIMessage
+# langgraph_prebuilt_agent.py
+import logging
+from langchain.chat_models import AzureChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
-from langchain.chat_models import ChatOpenAI
-from langchain_core.prompts import (
-    PromptTemplate,
-    SystemMessagePromptTemplate,
-    HumanMessagePromptTemplate
-)
+from langchain_core.prompts import SystemMessagePromptTemplate, HumanMessagePromptTemplate, ChatPromptTemplate, MessagesPlaceholder
+from trustcall import trustcall, TrustResult
 from tools import (
-    set_llm,
+    set_llm_and_spec,
     general_query_fn,
     openapi_help_fn,
     generate_payload_fn,
@@ -20,14 +18,30 @@ from tools import (
     simulate_load_test_fn,
 )
 
+logging.basicConfig(level=logging.INFO)
+
 class OpenApiReactRouterManager:
     def __init__(self, spec_text: str, llm=None):
+        # 1) save spec & llm
         self.spec_text = spec_text
-        self.llm = llm or ChatOpenAI(model="gpt-4", temperature=0)  # LLM injection
-        set_llm(self.llm)  # ensure tools use this LLM
+        self.llm = llm or AzureChatOpenAI(deployment_name="gpt-4", temperature=0)
+        # 2) inject into tools
+        set_llm_and_spec(self.llm, self.spec_text)
+        # 3) build agent
         self.agent = self._initialize_agent()
 
     def _initialize_agent(self):
+        # build structured prompt
+        system = SystemMessagePromptTemplate.from_template(
+            "You are an expert API assistant. Use your tools to answer user queries based on the preloaded OpenAPI spec."
+        )
+        human = HumanMessagePromptTemplate.from_template("User: {input}")
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system.template),
+            ("human", human.template),
+            MessagesPlaceholder(variable_name="agent_scratchpad")
+        ])
+
         tools = [
             general_query_fn,
             openapi_help_fn,
@@ -40,44 +54,37 @@ class OpenApiReactRouterManager:
             simulate_load_test_fn,
         ]
 
-        system_template = """
-You are an expert API-testing assistant. Use the tools to inspect OpenAPI specs, build/modify execution graphs, validate them, and describe plans. Always think step-by-step in ReAct format.
-OpenAPI Spec:
-{openapi_yaml}
-"""
-        system_prompt = SystemMessagePromptTemplate.from_template(system_template)
-        human_prompt = HumanMessagePromptTemplate.from_template("User: {input}")
-        custom_prompt = PromptTemplate.from_messages([system_prompt, human_prompt])
-
         return create_react_agent(
-            model=self.llm,                         # LLM citeturn0search0
-            tools=tools,                            # tool set citeturn0search2
-            prompt=custom_prompt,                  # custom ReAct prompt
-            checkpointer=MemorySaver(),            # persist state per thread citeturn1search0
-            response_format=None,
-            debug=False,
+            model=self.llm,
+            tools=tools,
+            prompt=prompt,
+            checkpointer=MemorySaver(),
+            response_format="structured"
         )
 
-    def run(self, user_input: str, thread_id: str = "default-thread") -> str:
-        inputs = {"input": user_input, "openapi_yaml": self.spec_text, "thread_id": thread_id}
-        result = self.agent.invoke(
-            inputs,
-            config={"configurable": {"thread_id": thread_id}}
-        )
-        # extract AIMessage content
-        if isinstance(result, dict) and "messages" in result:
-            for m in result["messages"]:
-                if isinstance(m, AIMessage):
-                    return m.content
-        return result.get("response") or result.get("output") or str(result)
+    async def run(self, user_input: str, thread_id: str = "default-thread"):
+        # wrap agent.invoke in trustcall
+        args = {"input": user_input, "thread_id": thread_id}
+        result = trustcall(self.agent.invoke, args, {"configurable": {"thread_id": thread_id}})
+        if not result.success:
+            logging.error(f"Agent call failed: {result.error}")
+            raise RuntimeError(result.error)
+        out = result.output
+        # extract structured response or fallback
+        if isinstance(out, dict) and "structured_response" in out:
+            return out["structured_response"]
+        if isinstance(out, dict) and "response" in out:
+            return out["response"]
+        return out
 
-# Example usage
+# Example usage (sync for demonstration; wrap in asyncio for real)
 if __name__ == "__main__":
+    import asyncio
     spec = open("openapi.yaml").read()
-    router = OpenApiReactRouterManager(spec_text=spec)
-    print(router.run("Generate API execution graph for this spec", "thread1"))
-    print(router.run("Add an edge from createPet to getPetById", "thread1"))
-    print(router.run("Validate the graph", "thread1"))
-    print(router.run("Describe the execution plan", "thread1"))
-    print(router.run("Give me the graph as JSON", "thread1"))
-    print(router.run("Simulate load test with 10 users", "thread1"))
+    mgr = OpenApiReactRouterManager(spec_text=spec)
+    resp = asyncio.run(mgr.run("Tell me about APIs", "thread1"))
+    print(resp)
+    resp = asyncio.run(mgr.run("Generate API execution graph", "thread1"))
+    print(resp)
+    resp = asyncio.run(mgr.run("Describe execution plan", "thread1"))
+    print(resp)
