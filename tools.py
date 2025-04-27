@@ -5,6 +5,8 @@ from langchain_core.tools import tool
 from trustcall import create_extractor
 from langchain.chat_models import ChatOpenAI
 
+
+
 # --- Globals to be set by agent startup ---
 _llm: ChatOpenAI = None
 _openapi_yaml: str = ""
@@ -19,6 +21,35 @@ def bind_trustcall(llm, tools: List[Any]):
         tools=tools,
         tool_choice="any",          # let TrustCall pick the right tool
     )
+
+
+from trustcall import trustcall  # <-- Add this import if not already
+from your_models_module import Api_execution_graph  # <-- Your pydantic output model
+import logging
+
+def generate_api_execution_graph_fn(user: str) -> Api_execution_graph:
+    """Generates an API execution graph (nodes + edges) from OpenAPI spec and reasoning behind it."""
+    
+    logging.info("Starting generate_api_execution_graph_fn")
+    
+    try:
+        formatted_prompt = prompt_template_generate_api_execution_graph.format(
+            openapi_spec=openapi_yaml,
+            user_input=user
+        )
+        logging.info("Formatted prompt ready")
+
+        # Call LLM using trustcall (safe execution)
+        graph_state = trustcall(
+            prompt=formatted_prompt,
+            llm=self.llm
+        )
+
+        return graph_state
+
+    except Exception as e:
+        logging.error(f"Exception occurred in generate_api_execution_graph_fn: {e}")
+        return Api_execution_graph(error="failed to parse payload", raw=str(e))
 
 # --- Your tools unchanged, except they assume global spec & state ---
 @tool
