@@ -1,12 +1,13 @@
 import os
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from langchain.chat_models import AzureChatOpenAI
 from langchain.schema import HumanMessage
 from langgraph.graph import StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
+# Import your existing ApiGraphManager (ensure it's in PYTHONPATH)
 from api_graph_manager import ApiGraphManager
 
 
@@ -35,15 +36,32 @@ class LangGraphOpenApiRouter:
         user_input = state["user_input"]
         prompt = (
             "You are an OpenAPI assistant.\n"
-            "Based on the user input, choose exactly one action from:"
-            " [parse_openapi, generate_sequence, generate_payloads, answer_openapi, simulate_load_test, execute_workflow].\n"
+            "Based on the user input, return one of the following:\n"
+            "- A single step name (e.g., 'generate_payloads')\n"
+            "- A JSON with key 'plan' and value as list of step names for multi-step flows.\n"
+            "Valid steps: [parse_openapi, generate_sequence, generate_payloads, answer_openapi, simulate_load_test, execute_workflow]\n"
             f"User Input: {user_input}\n"
-            "Return only the action name."
+            "Respond only with the step or JSON plan."
         )
-        resp = self.llm_router([HumanMessage(content=prompt)])
-        action = resp.content.strip()
-        state["next_step"] = action
+        response = self.llm_router([HumanMessage(content=prompt)]).content.strip()
+
+        try:
+            parsed = json.loads(response)
+            if isinstance(parsed, dict) and "plan" in parsed:
+                state["next_step"] = "execute_plan"
+                state["plan"] = parsed["plan"]
+                return state
+        except json.JSONDecodeError:
+            pass
+
+        state["next_step"] = response if response in self.tool_names() else "unknown_intent"
         return state
+
+    def tool_names(self) -> List[str]:
+        return [
+            "parse_openapi", "generate_sequence", "generate_payloads",
+            "answer_openapi", "simulate_load_test", "execute_workflow"
+        ]
 
     def parse_openapi(self, state: Dict[str, Any]) -> Dict[str, Any]:
         cache_path = os.path.join(self.cache_dir, "schema.json")
@@ -58,9 +76,7 @@ class LangGraphOpenApiRouter:
         return state
 
     def generate_sequence(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        graph = self.api_manager.generate_api_execution_graph_fn(
-            state.get("user_input", "")
-        )
+        graph = self.api_manager.generate_api_execution_graph_fn(state.get("user_input", ""))
         state["execution_graph"] = graph
         return state
 
@@ -84,9 +100,9 @@ class LangGraphOpenApiRouter:
 
     def simulate_load_test(self, state: Dict[str, Any]) -> Dict[str, Any]:
         num_users = 1
-        for p in state["user_input"].split():
-            if p.isdigit():
-                num_users = int(p)
+        for word in state["user_input"].split():
+            if word.isdigit():
+                num_users = int(word)
                 break
         graph = self.api_manager.simulate_load_test_fn(num_users=num_users)
         state["response"] = getattr(graph, "textContent", "")
@@ -101,17 +117,26 @@ class LangGraphOpenApiRouter:
         state["response"] = "Sorry, I didn't understand that."
         return state
 
+    def execute_plan(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        plan = state.get("plan", [])
+        for step in plan:
+            if step in self.tool_names():
+                func = getattr(self, step)
+                state = func(state)
+        return state
+
     def build_graph(self) -> StateGraph:
         builder = StateGraph()
-        builder.add_node("route_intent", self.route_intent)
         builder.set_entry_point("route_intent")
 
+        builder.add_node("route_intent", self.route_intent)
         builder.add_node("parse_openapi", self.parse_openapi)
         builder.add_node("generate_sequence", self.generate_sequence)
         builder.add_node("generate_payloads", self.generate_payloads)
         builder.add_node("answer_openapi", self.answer_openapi)
         builder.add_node("simulate_load_test", self.simulate_load_test)
         builder.add_node("execute_workflow", self.execute_workflow)
+        builder.add_node("execute_plan", self.execute_plan)
         builder.add_node("unknown_intent", self.unknown_intent)
 
         builder.add_conditional_edges(
@@ -124,6 +149,7 @@ class LangGraphOpenApiRouter:
                 "answer_openapi": "answer_openapi",
                 "simulate_load_test": "simulate_load_test",
                 "execute_workflow": "execute_workflow",
+                "execute_plan": "execute_plan",
                 "unknown_intent": "unknown_intent",
             },
         )
@@ -133,12 +159,9 @@ class LangGraphOpenApiRouter:
 
 
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-    from utils.openapi_utils import load_spec_text_from_file
-
     spec_file = os.getenv("OPENAPI_SPEC", "petstore.yaml")
-    spec = load_spec_text_from_file(spec_file)
+    with open(spec_file) as f:
+        spec = f.read()
 
     router_llm = AzureChatOpenAI(deployment_name="gpt-35-router", temperature=0)
     worker_llm = AzureChatOpenAI(deployment_name="gpt-35-worker", temperature=0)
