@@ -1,131 +1,181 @@
-import os
-import json
-from typing import Any, Dict
+import logging
+from typing import Optional
 
-from langchain.chat_models import AzureChatOpenAI
-from langchain.schema import HumanMessage
-from langgraph.graph import StateGraph
-from langgraph.checkpoint.memory import MemorySaver
+from pydantic import BaseModel, Field
+from langchain.tools import tool
+from langchain_openai import AzureChatOpenAI
+from trust_call import call_llm
 
-from graph_tools import ApiGraphManager  # Integrated tools file
+from api_execution_graph_schema import (
+    Api_execution_graph,
+    GraphOutput,
+    TextContent,
+)
+
+logging.basicConfig(level=logging.INFO)
 
 
-class LangGraphOpenApiRouter:
-    def __init__(
-        self,
-        spec_text: str,
-        llm_router: AzureChatOpenAI,
-        llm_worker: AzureChatOpenAI,
-        cache_dir: str = "./cache"
-    ):
-        self.spec_text = spec_text
-        self.llm_router = llm_router
-        self.llm_worker = llm_worker
-        os.makedirs(cache_dir, exist_ok=True)
-        self.cache_dir = cache_dir
+class ApiGraphManager:
+    llm: AzureChatOpenAI = None
+    openapi_yaml: str = None
+    graph_state: Api_execution_graph = Api_execution_graph()
 
-        # Initialize ApiGraphManager with worker LLM
-        self.api_manager = ApiGraphManager(
-            llm=self.llm_worker,
-            openapi_yaml=self.spec_text,
-            cache_dir=self.cache_dir
+    @classmethod
+    def set_llm(cls, llm: AzureChatOpenAI, openapi_yaml: str):
+        """Initialize the LLM instance and spec for all tools."""
+        cls.llm = llm
+        cls.openapi_yaml = openapi_yaml
+        logging.info(f"LLM set to {cls.llm}")
+
+    ############################################################################
+    # 1) Generate Execution Graph
+    ############################################################################
+    @staticmethod
+    @tool
+    def generate_api_execution_graph_fn(user: str) -> Api_execution_graph:
+        """Generates an API execution graph (nodes & edges) from OpenAPI spec."""
+        logging.info("Starting generate_api_execution_graph_fn")
+        prompt_template = """
+1. Parse the provided OpenAPI spec (YAML/JSON):
+{openapi_spec}
+
+User's query: {user_input}
+2. Identify all operations (paths, methods) and their dependencies.
+3. Generate example payloads for POST and PUT, resolving $ref, enums, and nested schemas.
+4. Suggest parallel execution only when operations are independent.
+5. Include 'verify' nodes after each state-changing call to check resource integrity.
+6. OperationId should be like createProduct, updateProduct, getAllAfterCreate, verifyAfterUpdate, etc.
+7. Edge will not go back to earlier node; if we need to do an operation again it will be new node with same operation, but id will be different.
+8. Flow should start with dummy Start Node (operationId=START) and end at End node (operationId=END).
+9. Add proper text content explaining the solution or execution plan in user friendly way.
+10. Verification: Do we have proper edges.
+11. Do we have START and END.
+12. Text content is proper.
+13. Payloads added for relevant operations.
+"""
+        formatted = prompt_template.format(
+            openapi_spec=ApiGraphManager.openapi_yaml, user_input=user
         )
-
-        # Memory saver for LangGraph state
-        self.memory = MemorySaver()
-
-    def route_intent(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        user_input = state["user_input"]
-        resp = self.llm_router([
-            HumanMessage(content=(
-                "You are an OpenAPI assistant. Based on the user input, choose exactly one action from:"
-                " [parse_openapi, generate_sequence, generate_payloads, answer_openapi, simulate_load_test, execute_workflow].\n"
-                f"User Input: {user_input}\nReturn only the action name."
-            ))
-        ])
-        state["next_step"] = resp.content.strip()
-        return state
-
-    def parse_openapi(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        state["openapi_schema"] = self.api_manager.parse_spec_fn(state.get("user_input", ""))
-        return state
-
-    def generate_sequence(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        state["execution_graph"] = self.api_manager.generate_api_execution_graph_fn(
-            state.get("user_input", ""))
-        return state
-
-    def generate_payloads(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        state["payloads"] = self.api_manager.generate_payload_fn(state.get("user_input", ""))
-        return state
-
-    def answer_openapi(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        state["response"] = self.api_manager.openapi_help_fn(state.get("user_input", ""))
-        return state
-
-    def simulate_load_test(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        num_users = 1
-        for p in state["user_input"].split():
-            if p.isdigit():
-                num_users = int(p)
-                break
-        state["response"] = self.api_manager.simulate_load_test_fn(num_users=num_users)
-        return state
-
-    def execute_workflow(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        state["response"] = self.api_manager.execute_workflow_fn(state.get("user_input", ""))
-        return state
-
-    def unknown_intent(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        state["response"] = "Sorry, I didn't understand that."
-        return state
-
-    def build_graph(self) -> StateGraph:
-        builder = StateGraph()
-        builder.set_entry_point("route_intent")
-
-        builder.add_node("route_intent", self.route_intent)
-        builder.add_node("parse_openapi", self.parse_openapi)
-        builder.add_node("generate_sequence", self.generate_sequence)
-        builder.add_node("generate_payloads", self.generate_payloads)
-        builder.add_node("answer_openapi", self.answer_openapi)
-        builder.add_node("simulate_load_test", self.simulate_load_test)
-        builder.add_node("execute_workflow", self.execute_workflow)
-        builder.add_node("unknown_intent", self.unknown_intent)
-
-        builder.add_conditional_edges(
-            "route_intent",
-            lambda state: state.get("next_step", "unknown_intent"),
-            {
-                "parse_openapi": "parse_openapi",
-                "generate_sequence": "generate_sequence",
-                "generate_payloads": "generate_payloads",
-                "answer_openapi": "answer_openapi",
-                "simulate_load_test": "simulate_load_test",
-                "execute_workflow": "execute_workflow",
-                "unknown_intent": "unknown_intent",
-            },
+        ApiGraphManager.graph_state = call_llm(
+            formatted, ApiGraphManager.llm, Api_execution_graph
         )
+        return ApiGraphManager.graph_state
 
-        builder.set_finish_point("*")
-        return builder.compile()
+    ############################################################################
+    # 2) Add Edge
+    ############################################################################
+    @staticmethod
+    @tool
+    def add_edge_fn(from_node: str, to_node: str) -> Api_execution_graph:
+        """Add an edge to the existing API execution graph."""
+        logging.info(f"Adding edge from {from_node} to {to_node}")
+        prompt = f"""
+Given the existing API execution graph {ApiGraphManager.graph_state.graph.model_dump()},
+Add an edge from {from_node} to {to_node}.
+Ensure:
+- Flow still starts at START and ends at END.
+- No cycles (DAG).
+- Text content remains clear.
+"""
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, Api_execution_graph
+        )
+        return ApiGraphManager.graph_state
 
+    ############################################################################
+    # 3) Validate Graph
+    ############################################################################
+    @staticmethod
+    @tool
+    def validate_graph_fn() -> Api_execution_graph:
+        """Validate the current API execution graph."""
+        logging.info("Starting validate_graph_fn")
+        prompt = f"Validate the current API execution graph {ApiGraphManager.graph_state.graph}."
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, Api_execution_graph
+        )
+        return ApiGraphManager.graph_state
 
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
+    ############################################################################
+    # 4) Get JSON
+    ############################################################################
+    @staticmethod
+    @tool
+    def get_execution_graph_json_fn() -> Api_execution_graph:
+        """Get the JSON representation of the current API execution graph."""
+        logging.info("Starting get_execution_graph_json_fn")
+        prompt = "Get the JSON representation of the current API execution graph."
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, Api_execution_graph
+        )
+        return ApiGraphManager.graph_state
 
-    spec_file = os.getenv("OPENAPI_SPEC", "petstore.yaml")
-    with open(spec_file) as f:
-        spec = f.read()
+    ############################################################################
+    # 5) General Query
+    ############################################################################
+    @staticmethod
+    @tool
+    def general_query_fn(user: str) -> Api_execution_graph:
+        """Answer any general question using LLM reasoning."""
+        logging.info("Starting general_query_fn")
+        prompt = f"Based on your understanding, answer user query: {user}"
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, TextContent
+        )
+        return ApiGraphManager.graph_state
 
-    router_llm = AzureChatOpenAI(deployment_name="gpt-35-router", temperature=0)
-    worker_llm = AzureChatOpenAI(deployment_name="gpt-35-worker", temperature=0)
+    ############################################################################
+    # 6) OpenAPI Help
+    ############################################################################
+    @staticmethod
+    @tool
+    def openapi_help_fn(user: str) -> Api_execution_graph:
+        """Explain OpenAPI endpoints. Answers user query for given OpenAPI swagger."""
+        logging.info("Starting openapi_help_fn")
+        prompt = f"Based on the OpenAPI specification, answer user query: {user}"
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, TextContent
+        )
+        return ApiGraphManager.graph_state
 
-    router = LangGraphOpenApiRouter(spec, router_llm, worker_llm)
-    graph = router.build_graph()
+    ############################################################################
+    # 7) Generate Payload
+    ############################################################################
+    @staticmethod
+    @tool
+    def generate_payload_fn(user: str) -> Api_execution_graph:
+        """Generate a realistic JSON payload matching the given OpenAPI schema."""
+        logging.info("Starting generate_payload_fn")
+        prompt = f"Given the OpenAPI specification, generate a JSON payload for: {user}"
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, TextContent
+        )
+        return ApiGraphManager.graph_state
 
-    while True:
-        user_in = input("You: ")
-        out = graph.invoke({"user_input": user_in})
-        print("Assistant:", out.get("response", ""))
+    ############################################################################
+    # 8) Simulate Load Test
+    ############################################################################
+    @staticmethod
+    @tool
+    def simulate_load_test_fn(num_users: int = 1) -> Api_execution_graph:
+        """Simulate a load test by generating concurrent execution plan for N users."""
+        logging.info("Starting simulate_load_test_fn")
+        prompt = f"Based on the current API execution graph {ApiGraphManager.graph_state.graph.model_dump()}, simulate a load test with {num_users} users."
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, TextContent
+        )
+        return ApiGraphManager.graph_state
+
+    ############################################################################
+    # 9) Execute Workflow
+    ############################################################################
+    @staticmethod
+    @tool
+    def execute_workflow_fn(user: str) -> Api_execution_graph:
+        """Execute workflow. Summarize the execution plan of OpenAPI."""
+        logging.info("Starting execute_workflow_fn")
+        prompt = f"Summarize execution plan: {ApiGraphManager.graph_state.graph.model_dump()}"
+        ApiGraphManager.graph_state = call_llm(
+            prompt, ApiGraphManager.llm, TextContent
+        )
+        return ApiGraphManager.graph_state
