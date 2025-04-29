@@ -125,54 +125,57 @@ class LangGraphOpenApiRouter:
             logger.info("Router single-step: %s", state["next_step"])
         return state
 
-    def build_graph(self):
-        # 1) Create graph with Pydantic schema :contentReference[oaicite:4]{index=4}
+    from langgraph.graph import StateGraph, START, END
+
+
+    def build_graph(router, RouterState):
         builder = StateGraph(RouterState)
-
-        # 2) Entry: START → route_intent :contentReference[oaicite:5]{index=5}
-        logger.info("Adding edge: START → route_intent")
+    
+        # ── ENTRY ─────────────────────────────────────
+        logger.info("ADDING EDGE: %s → %s", START, "route_intent")
         builder.add_edge(START, "route_intent")
-
-        # 3) Add router node & tools :contentReference[oaicite:6]{index=6}
-        builder.add_node("route_intent", self.route_intent)
-        for name, fn in self.tools.items():
-            logger.info("Adding node: %s", name)
+        builder.set_entry_point("route_intent")
+    
+        # ── TOOL NODES ─────────────────────────────────
+        builder.add_node("route_intent", router.route_intent)
+        for name, fn in router.tools.items():
+            logger.info("ADDING NODE: %s", name)
             builder.add_node(name, fn)
-
-        # 4) Conditional routing from router :contentReference[oaicite:7]{index=7}
-        logger.info("Adding conditional edges from route_intent")
+    
+        # ── CONDITIONAL ROUTING ───────────────────────
+        logger.info("ADDING conditional edges from route_intent")
         builder.add_conditional_edges(
             "route_intent",
             lambda s: s.next_step or "unknown_intent",
-            {k: k for k in self.tools}
+            {k: k for k in router.tools}
         )
-
-        # 5) Static chain: payloads → sequence (optional) :contentReference[oaicite:8]{index=8}
-        logger.info("Adding static edge: generate_payloads → generate_sequence")
+    
+        # ── STATIC CHAIN EXAMPLE ──────────────────────
+        logger.info("ADDING EDGE: generate_payloads → generate_sequence")
         builder.add_edge("generate_payloads", "generate_sequence")
-
-        # 6) Real finish node, wiring all terminal tools into it :contentReference[oaicite:9]{index=9}
-        def finish(state): 
-            logger.info("Reached finish node") 
+    
+        # ── FINISH ────────────────────────────────────
+        def finish(state):
+            logger.info("Reached finish node")
             return state
-
-        logger.info("Adding node: finish")
+    
+        logger.info("ADDING NODE: finish")
         builder.add_node("finish", finish)
-
-        for term in ["generate_payloads","generate_sequence","execute_plan",
-                     "answer_openapi","simulate_load_test","execute_workflow","unknown_intent"]:
-            logger.info("Adding edge: %s → finish", term)
+    
+        for term in router.tools:
+            logger.info("ADDING EDGE: %s → finish", term)
             builder.add_edge(term, "finish")
-
-        # 7) Mark entry & finish :contentReference[oaicite:10]{index=10}
-        builder.set_entry_point(START)
+    
+        logger.info("ADDING EDGE: finish → %s", END)
+        builder.add_edge("finish", END)
+    
         builder.set_finish_point("finish")
-
-        # 8) Compile and log topology :contentReference[oaicite:11]{index=11}
+    
         graph = builder.compile()
-        logger.info("Compiled nodes: %s", graph.nodes)
-        logger.info("Compiled edges: %s", graph.edges)
+        logger.info("COMPILED NODES: %s", graph.nodes)
+        logger.info("COMPILED EDGES: %s", graph.edges)
         return graph
+
 
 if __name__ == "__main__":
     spec = open("petstore.yaml").read()
