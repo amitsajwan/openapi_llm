@@ -71,15 +71,85 @@ def unknown_intent(state: RouterState) -> RouterState:
     state.response = "Sorry, didn't understand."
     return state
 
-TOOL_FUNCTIONS = {
-    "parse_openapi": parse_openapi,
-    "generate_sequence": generate_sequence,
-    "generate_payloads": generate_payloads,
-    "answer": answer,
-    "simulate_load_test": simulate_load_test,
-    "execute_workflow": execute_workflow,
-    "add_edge": add_edge,
-    "validate_graph": validate_graph,
-    "unknown_intent": unknown_intent,
-}
 
+def list_apis(state: RouterState) -> RouterState:
+    """
+    List all available API operations (method + path) from the OpenAPI spec.
+    """
+    spec = state.openapi_schema or {}
+    apis = []
+    for path, methods in spec.get("paths", {}).items():
+        for method in methods:
+            apis.append(f"{method.upper()} {path}")
+    state.response = "Available APIs:\n" + "\n".join(apis)
+    state.scratchpad['last_list_apis'] = apis
+    return state
+
+
+def explain_endpoint(state: RouterState) -> RouterState:
+    """
+    Explain details of a specific endpoint named or given in user_input.
+    """
+    user = state.user_input or ""
+    # attempt to parse method and path
+    parts = user.split()
+    if len(parts) >= 2 and parts[0].upper() in ["GET","POST","PUT","DELETE","PATCH"]:
+        method, path = parts[0].upper(), parts[1]
+    else:
+        state.response = "Please specify endpoint as '<METHOD> <path>'."
+        return state
+
+    details = (state.openapi_schema or {}).get("paths", {}).get(path, {}).get(method.lower())
+    if not details:
+        state.response = f"Endpoint {method} {path} not found."
+        return state
+
+    desc = details.get("description", "No description.")
+    params = details.get("parameters", [])
+    rb = details.get("requestBody", {})
+    state.response = (
+        f"{method} {path}: {desc}\n"
+        f"Parameters: {json.dumps(params, indent=2)}\n"
+        f"RequestBody schema: {json.dumps(rb.get('content', {}), indent=2)}"
+    )
+    return state
+
+
+def explain_graph(state: RouterState) -> RouterState:
+    """
+    Provide a human-readable explanation of the current execution graph.
+    """
+    graph = state.execution_graph or {}
+    lines = []
+    for node, data in graph.items():
+        nxt = data.get("next", [])
+        lines.append(f"{node} -> {', '.join(nxt) if nxt else 'END'}")
+    state.response = "Execution Graph:\n" + "\n".join(lines)
+    return state
+
+
+def verify_created(state: RouterState) -> RouterState:
+    """
+    After a create/update step, verify by fetching the resource.
+    Assumes last payload contained an 'id' field.
+    """
+    payloads = state.payloads or {}
+    last = state.scratchpad.get('last_payload_op')
+    if not last:
+        state.response = "No record of a creation operation to verify."
+        return state
+    op_id, payload = last
+    resource_id = payload.get('id')
+    if not resource_id:
+        state.response = "No 'id' found in payload to verify."
+        return state
+    # assume GET operationId is 'get' + resource
+    get_op = f"get{op_id[0].upper()}{op_id[1:]}"
+    if get_op in payloads:
+        state.response = f"Verified resource via {get_op} with id {resource_id}."
+    else:
+        state.response = f"Could not verify: GET operation {get_op} not found."
+    return state
+
+
+ 
