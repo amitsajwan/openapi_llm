@@ -13,3 +13,4 @@ class RouterState:
     plan: List[str] = field(default_factory=list)
     action_history: List[tuple] = field(default_factory=list)
     scratchpad: Dict[str, Any] = field(default_factory=dict)  # persistent memory
+
