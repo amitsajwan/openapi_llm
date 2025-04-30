@@ -55,7 +55,7 @@ class BotState(BaseModel):
     # Parsed schema cached
     # Use Dict[str, Any] as OpenAPI schema structure can be complex and varies
     openapi_schema: Optional[Dict[str, Any]] = Field(default=None)
-
+  
     # The generated execution graph using the structured format
     graph_output: Optional[GraphOutput] = Field(default=None)
 
