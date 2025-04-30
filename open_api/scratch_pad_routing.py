@@ -1,64 +1,144 @@
-
+# router.py
 import json
-from typing import Any
-from langchain.schema import HumanMessage
-from langchain_openai import AzureChatOpenAI
+# Assume langchain.schema and langchain_openai are available
+# from langchain.schema import HumanMessage
+# from langchain_openai import AzureChatOpenAI # Using MockLLM from tools.py
 from langgraph.graph import StateGraph, START, END
-from scratchpad_route_state import RouterState
-from scratchpad_tools import TOOL_FUNCTIONS, unknown_intent
+from models import BotState, BotIntent, AVAILABLE_TOOLS # Use BotState as the graph state
+from tools import TOOL_FUNCTIONS, llm # Import tools and the mock llm instance
+from pydantic import ValidationError # For parsing router output if LLM returns structured JSON
 
-class ScratchPadRouter:
-    def __init__(self, llm_router: AzureChatOpenAI):
+
+class BotRouter:
+    """
+    Orchestrates the bot's workflow using LangGraph.
+    The router node decides the next tool (node) to execute.
+    """
+    def __init__(self, llm_router: Any): # Accept any LLM-like object
         self.llm_router = llm_router
 
-    def route(self, state: RouterState) -> RouterState:
-        # Compose prompt with examples for improved few-shot intent classification
-        examples = [
-            {"user": "What all apis are there?", "tool": "list_apis"},
-            {"user": "How to create a product?", "tool": "generate_sequence"},
-            {"user": "What is payload for create?", "tool": "generate_payloads"},
-            {"user": "Generate API execution graph.", "tool": "generate_sequence"},
-            {"user": "Add getAll at start.", "tool": "add_edge"},
-            {"user": "Verify created product after update.", "tool": "verify_created"},
-            {"user": "Explain execution graph.", "tool": "explain_graph"},
-            {"user": "Explain create product api.", "tool": "explain_endpoint"}
-        ]
-        # Build few-shot prompt
-        prompt = """
-You are an OpenAPI assistant. Choose the appropriate tool for the user request.
-Available tools: {}.
-Respond with exactly the tool name or JSON for a plan.
-Examples:
-""".format(list(TOOL_FUNCTIONS.keys()))
-        for ex in examples:
-            prompt += f"User: {ex['user']}\nAssistant: {ex['tool']}\n"
-        prompt += f"User: {state.user_input}\nAssistant:"
+    def route_step(self, state: BotState) -> str:
+        """
+        This node determines the next tool/intent based on user input and history.
+        It returns the string name (value) of the next BotIntent.
+        """
+        print("\n--- Routing Step ---")
+        # Construct the prompt for the router LLM
+        # Include scratchpad history for context
+        history_prompt = state.scratchpad.get("reason", "")
+        if history_prompt:
+            # Add a header for clarity in the prompt
+            history_prompt = "--- Conversation History and Reasoning ---\n" + history_prompt + "\n------------------------------------------\n"
 
-        # LLM call
-        resp = self.llm_router([HumanMessage(content=prompt)]).content.strip()
-        # parse plan or single tool
+        # Include available tools explicitly in the prompt
+        tool_list_str = ", ".join(AVAILABLE_TOOLS) # Use the list from models
+
+        prompt = f"""{history_prompt}
+User: {state.user_input}
+
+Review the conversation history and the user's latest request.
+Decide the single most appropriate action (tool) the bot should take next from the list below.
+Respond with *only* the exact string name of the chosen tool.
+If the user's intent is unclear or doesn't map to an available tool, respond with '{BotIntent.UNKNOWN.value}'.
+
+Available tools: {tool_list_str}
+
+Output:""" # Expecting just the tool name string
+
+
+        # Add the current user input to the reasoning *before* calling the LLM
+        # This logs the input even if routing fails
+        user_input_reason = f"User Input: {state.user_input}\n"
+        state.scratchpad['reason'] = state.scratchpad.get('reason', '') + user_input_reason
+        print(f"Routing Prompt:\n{prompt[:500]}...") # Print truncated prompt
+
+        # Call the router LLM
+        # In a real scenario: res = self.llm_router([HumanMessage(content=prompt)]).content
+        res = self.llm_router.invoke(prompt).strip() # Use invoke and strip whitespace
+
+        # Determine the next step based on the LLM's output
+        # Check if the LLM's response is a valid tool name defined in TOOL_FUNCTIONS
+        next_step_name = res if res in TOOL_FUNCTIONS else BotIntent.UNKNOWN.value
+
+        # Update state with the chosen intent
         try:
-            out = json.loads(resp)
-            state.plan = out.get("plan", [])
-            state.next_step = "execute_plan"
-        except json.JSONDecodeError:
-            state.next_step = resp if resp in TOOL_FUNCTIONS else "unknown_intent"
+            # Validate the chosen name against the BotIntent Enum
+            state.intent = BotIntent(next_step_name)
+        except ValueError:
+            # Fallback if LLM output is not a valid enum value (should be caught by `res in TOOL_FUNCTIONS` but double-checking)
+            state.intent = BotIntent.UNKNOWN
+            next_step_name = BotIntent.UNKNOWN.value # Ensure the return value matches
 
-        # Execute
-        if state.next_step == "execute_plan":
-            for step in state.plan:
-                fn = TOOL_FUNCTIONS.get(step, unknown_intent)
-                state = fn(state)
-        else:
-            state = TOOL_FUNCTIONS.get(state.next_step, unknown_intent)(state)
-        return state
+        # Add the router's decision to the reasoning scratchpad
+        state.scratchpad['reason'] += f"Router Decision: Chose tool '{state.intent.value}'.\n"
 
-    def build(self) -> Any:
-        builder = StateGraph(RouterState)
-        builder.add_node("route", self.route)
-        for name, fn in TOOL_FUNCTIONS.items():
-            builder.add_node(name, fn)
-        builder.add_conditional_edges("route", lambda s: s.next_step or "unknown_intent", {n: n for n in TOOL_FUNCTIONS})
+        # Record action history for tracing
+        state.action_history.append((state.user_input, state.intent.value))
+
+        print(f"Router decided: {state.intent.value}")
+        # The router node returns the string name of the *next node* (the chosen tool)
+        # LangGraph will use this return value to follow the conditional edge.
+        return state.intent.value
+
+    def build_graph(self):
+        """Build the LangGraph StateGraph."""
+        # The graph state is our Pydantic BotState model
+        builder = StateGraph(BotState)
+
+        # Add the router node
+        builder.add_node("route", self.route_step) # This node returns the next step name
+
+        # Add nodes for each tool function
+        # Each tool function receives and returns the BotState
+        # We need to pass the LLM instance to the tool functions when they are called by the graph.
+        # A common pattern is to wrap the tool function in a lambda or a helper function
+        # that takes state and passes the LLM from the router's scope.
+        # Here, we pass the 'llm' instance imported from tools.py (the mock or actual LLM).
+        tool_nodes = {name: lambda state, f=func: f(state, llm) for name, func in TOOL_FUNCTIONS.items()}
+
+        for name, node in tool_nodes.items():
+             builder.add_node(name, node)
+
+        # Define the entry point of the graph
         builder.add_edge(START, "route")
-        builder.add_edge("route", END)
-        return builder.compile()
+
+        # Define the transitions from the router node
+        # The conditional edge uses the return value of the 'route_step' node
+        # which is the string name of the chosen tool.
+        # The mapping {name: name for name in TOOL_FUNCTIONS.keys()}
+        # means if route_step returns "tool_name", the graph transitions to the node named "tool_name".
+        builder.add_conditional_edges(
+            "route",
+            lambda next_step_name: next_step_name, # The next state key is the return value of route_step
+            # Map the string name returned by route_step to the corresponding node name
+            # Ensure this mapping covers all possible string outputs of route_step
+            TOOL_FUNCTIONS # Directly use the TOOL_FUNCTIONS dict as the mapping
+        )
+
+        # Define transitions from the tool nodes
+        # Most tools should transition back to the router for the next turn,
+        # allowing the bot to process follow-up questions or actions.
+        # Some tools (like unknown or get_graph_json) might end the conversation turn.
+        for tool_name in TOOL_FUNCTIONS.keys():
+             if tool_name == BotIntent.UNKNOWN.value:
+                  # If intent is unknown, end the current turn.
+                  builder.add_edge(tool_name, END)
+             elif tool_name == BotIntent.GET_GRAPH_JSON.value:
+                  # Outputting JSON is likely the final action for that specific request.
+                  builder.add_edge(tool_name, END)
+             elif tool_name == BotIntent.GENERAL_QUERY.value:
+                 # A general query might be a one-off question, so end the turn.
+                 builder.add_edge(tool_name, END)
+             elif tool_name == BotIntent.OPENAPI_HELP.value:
+                 # Providing help might be a one-off, or could lead to further questions.
+                 # Let's make it go back to route for potential follow-up.
+                 builder.add_edge(tool_name, "route")
+             else:
+                  # Most other tools (generate_graph, add_edge, describe_graph, generate_payload)
+                  # likely require further interaction or explanation, so go back to the router.
+                  builder.add_edge(tool_name, "route")
+
+        # Compile the graph
+        app = builder.compile()
+        return app
+
