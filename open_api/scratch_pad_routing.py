@@ -1,46 +1,64 @@
+
 import json
-from langchain.schema import HumanMessage  # for LLM calls :contentReference[oaicite:0]{index=0}
+from typing import Any
+from langchain.schema import HumanMessage
 from langchain_openai import AzureChatOpenAI
-from langgraph.graph import StateGraph, START, END  # LangGraph usage :contentReference[oaicite:1]{index=1}
-from models import RouterState
-from scratchpad_tools import TOOL_FUNCTIONS
+from langgraph.graph import StateGraph, START, END
+from scratchpad_route_state import RouterState
+from scratchpad_tools import TOOL_FUNCTIONS, unknown_intent
 
 class ScratchPadRouter:
     def __init__(self, llm_router: AzureChatOpenAI):
         self.llm_router = llm_router
 
     def route(self, state: RouterState) -> RouterState:
-        # Construct prompt with scratchpad history
-        history = state.scratchpad.get("dialogue", "")
-        prompt = (
-            f"{history}\nUser: {state.user_input}\nAssistant (choose intent/tool):"
-        )
-        resp = self.llm_router([HumanMessage(content=prompt)]).content
-        state.intent = resp.strip()
-        # update scratchpad dialogue
-        state.scratchpad["dialogue"] = prompt + "\n" + resp
-        # If plan returned as JSON, parse it
+        # Compose prompt with examples for improved few-shot intent classification
+        examples = [
+            {"user": "What all apis are there?", "tool": "list_apis"},
+            {"user": "How to create a product?", "tool": "generate_sequence"},
+            {"user": "What is payload for create?", "tool": "generate_payloads"},
+            {"user": "Generate API execution graph.", "tool": "generate_sequence"},
+            {"user": "Add getAll at start.", "tool": "add_edge"},
+            {"user": "Verify created product after update.", "tool": "verify_created"},
+            {"user": "Explain execution graph.", "tool": "explain_graph"},
+            {"user": "Explain create product api.", "tool": "explain_endpoint"}
+        ]
+        # Build few-shot prompt
+        prompt = """
+You are an OpenAPI assistant. Choose the appropriate tool for the user request.
+Available tools: {}.
+Respond with exactly the tool name or JSON for a plan.
+Examples:
+""".format(list(TOOL_FUNCTIONS.keys()))
+        for ex in examples:
+            prompt += f"User: {ex['user']}\nAssistant: {ex['tool']}\n"
+        prompt += f"User: {state.user_input}\nAssistant:"
+
+        # LLM call
+        resp = self.llm_router([HumanMessage(content=prompt)]).content.strip()
+        # parse plan or single tool
         try:
             out = json.loads(resp)
             state.plan = out.get("plan", [])
             state.next_step = "execute_plan"
         except json.JSONDecodeError:
-            state.next_step = state.intent if state.intent in TOOL_FUNCTIONS else "unknown_intent"
+            state.next_step = resp if resp in TOOL_FUNCTIONS else "unknown_intent"
 
-        # Execute next step or plan
+        # Execute
         if state.next_step == "execute_plan":
             for step in state.plan:
-                state = TOOL_FUNCTIONS.get(step, unknown_intent)(state)
+                fn = TOOL_FUNCTIONS.get(step, unknown_intent)
+                state = fn(state)
         else:
-            state = TOOL_FUNCTIONS[state.next_step](state)
+            state = TOOL_FUNCTIONS.get(state.next_step, unknown_intent)(state)
         return state
 
     def build(self) -> Any:
-        builder = StateGraph(RouterState)  # schema as TypedDict :contentReference[oaicite:2]{index=2}
+        builder = StateGraph(RouterState)
         builder.add_node("route", self.route)
         for name, fn in TOOL_FUNCTIONS.items():
             builder.add_node(name, fn)
-        builder.add_conditional_edges("route", lambda s: s.next_step, {n: n for n in TOOL_FUNCTIONS})
+        builder.add_conditional_edges("route", lambda s: s.next_step or "unknown_intent", {n: n for n in TOOL_FUNCTIONS})
         builder.add_edge(START, "route")
         builder.add_edge("route", END)
         return builder.compile()
