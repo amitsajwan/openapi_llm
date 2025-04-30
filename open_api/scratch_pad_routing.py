@@ -5,22 +5,21 @@ import json
 # from langchain_openai import AzureChatOpenAI # Using MockLLM from tools.py
 from langgraph.graph import StateGraph, START, END
 from models import BotState, BotIntent, AVAILABLE_TOOLS # Use BotState as the graph state
-from tools import TOOL_FUNCTIONS, llm # Import tools and the mock llm instance
-from pydantic import ValidationError # For parsing router output if LLM returns structured JSON
-
+from tools import TOOL_FUNCTIONS # Import tool functions mapping
+# We will pass LLM instances from main.py, so no global llm here
 
 class BotRouter:
     """
     Orchestrates the bot's workflow using LangGraph.
-    The router node decides the next tool (node) to execute.
+    Uses a dedicated router LLM to decide the next tool (node) to execute.
     """
-    def __init__(self, llm_router: Any): # Accept any LLM-like object
+    def __init__(self, llm_router: Any): # Accept the router LLM instance
         self.llm_router = llm_router
 
     def route_step(self, state: BotState) -> str:
         """
-        This node determines the next tool/intent based on user input and history.
-        It returns the string name (value) of the next BotIntent.
+        This node determines the next tool/intent based on user input and history
+        using the router LLM. It returns the string name (value) of the next BotIntent.
         """
         print("\n--- Routing Step ---")
         # Construct the prompt for the router LLM
@@ -80,21 +79,27 @@ Output:""" # Expecting just the tool name string
         # LangGraph will use this return value to follow the conditional edge.
         return state.intent.value
 
-    def build_graph(self):
-        """Build the LangGraph StateGraph."""
+    def build_graph(self, llm_worker: Any):
+        """
+        Build the LangGraph StateGraph.
+        Accepts the worker LLM instance to pass to the tool nodes.
+        """
         # The graph state is our Pydantic BotState model
         builder = StateGraph(BotState)
 
         # Add the router node
-        builder.add_node("route", self.route_step) # This node returns the next step name
+        builder.add_node("route", self.route_step) # This node uses self.llm_router
 
         # Add nodes for each tool function
         # Each tool function receives and returns the BotState
-        # We need to pass the LLM instance to the tool functions when they are called by the graph.
-        # A common pattern is to wrap the tool function in a lambda or a helper function
-        # that takes state and passes the LLM from the router's scope.
-        # Here, we pass the 'llm' instance imported from tools.py (the mock or actual LLM).
-        tool_nodes = {name: lambda state, f=func: f(state, llm) for name, func in TOOL_FUNCTIONS.items()}
+        # We wrap the tool function in a lambda to pass the worker LLM instance
+        tool_nodes = {name: lambda state, f=func: f(state, llm_worker) for name, func in TOOL_FUNCTIONS.items()}
+        # If you had multiple worker LLMs (e.g., llm_parser, llm_generator),
+        # you would modify the lambda for specific tools:
+        # tool_nodes[BotIntent.OPENAPI_HELP.value] = lambda state: openapi_help(state, llm_parser)
+        # tool_nodes[BotIntent.GENERATE_GRAPH.value] = lambda state: generate_api_execution_graph(state, llm_generator)
+        # etc. For this example, one llm_worker is used for all tools.
+
 
         for name, node in tool_nodes.items():
              builder.add_node(name, node)
@@ -129,12 +134,12 @@ Output:""" # Expecting just the tool name string
              elif tool_name == BotIntent.GENERAL_QUERY.value:
                  # A general query might be a one-off question, so end the turn.
                  builder.add_edge(tool_name, END)
-             elif tool_name == BotIntent.OPENAPI_HELP.value:
-                 # Providing help might be a one-off, or could lead to further questions.
-                 # Let's make it go back to route for potential follow-up.
-                 builder.add_edge(tool_name, "route")
+             # Note: OPENAPI_HELP now goes back to route to allow follow-up after parsing/help
+             # elif tool_name == BotIntent.OPENAPI_HELP.value:
+             #     builder.add_edge(tool_name, END) # Example: end after help
+
              else:
-                  # Most other tools (generate_graph, add_edge, describe_graph, generate_payload)
+                  # Most other tools (generate_graph, add_edge, describe_graph, generate_payload, openapi_help)
                   # likely require further interaction or explanation, so go back to the router.
                   builder.add_edge(tool_name, "route")
 
