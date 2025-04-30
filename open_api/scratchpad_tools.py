@@ -4,7 +4,10 @@ from typing import Dict, Any, List
 # Assume langchain.schema and langchain_openai are available
 # from langchain.schema import HumanMessage
 # from langchain_openai import AzureChatOpenAI # Replace MockLLM with your actual LLM import
-from models import BotState, GraphOutput, Node, Edge, TextContent, BotIntent, AVAILABLE_TOOLS
+from models import ( # Import updated models including parameter models
+    BotState, GraphOutput, Node, Edge, TextContent, BotIntent, AVAILABLE_TOOLS,
+    AddEdgeParams, GeneratePayloadParams # Import parameter models
+)
 from pydantic import ValidationError # Import for handling potential JSON parsing errors
 
 # --- Helper for programmatic cycle detection ---
@@ -51,7 +54,7 @@ def check_for_cycles(graph: GraphOutput) -> tuple[bool, str]:
 
 # --- Tool Functions ---
 # Each tool function takes BotState and the LLM instance (which will be the worker LLM), and returns the updated BotState.
-# The TOOL_FUNCTIONS dictionary is now defined within the LangGraphOpenApiRouter class.
+# These tools now read parameters from state.extracted_params if needed.
 
 def update_scratchpad_reason(state: BotState, tool_name: str, details: str) -> BotState:
      """Helper to append reasoning/details to the scratchpad."""
@@ -66,7 +69,7 @@ def update_scratchpad_reason(state: BotState, tool_name: str, details: str) -> B
 
 def parse_openapi(state: BotState, llm: Any) -> BotState:
     """Tool to parse OpenAPI spec text into a schema."""
-    tool_name = BotIntent.OPENAPI_HELP.value # Using OPENAPI_HELP intent for this tool
+    tool_name = "Internal_ParseOpenAPI" # Give it a distinct name if not directly routed by user intent
     if not state.openapi_spec_text:
         state.text_content = TextContent(text="Error: No OpenAPI spec text provided to parse.")
         return update_scratchpad_reason(state, tool_name, "No spec text provided by user.")
@@ -133,8 +136,13 @@ def generate_payload(state: BotState, llm: Any) -> BotState:
          state.text_content = TextContent(text="Error: Schema or graph not available to generate payloads.")
          return update_scratchpad_reason(state, tool_name, "Schema or graph missing.")
 
+    # Check if specific operation_ids were extracted, otherwise generate for all relevant
+    # params = state.extracted_params # Example of reading extracted params
+    # target_operation_ids = params.get('operation_ids') if params else None
+
     prompt = f"""Given the OpenAPI schema and the current execution graph JSON, generate example JSON payloads for operations that require them (typically POST, PUT, PATCH).
     Update the `payload` field for the relevant nodes in the graph JSON and return the *entire* updated graph JSON object matching the `GraphOutput` structure. Operations without a request body (GET, DELETE, HEAD, OPTIONS) should keep payload as null.
+    Focus on operations present in the current graph.
 
     OpenAPI Schema JSON:
     ```json
@@ -195,56 +203,60 @@ def general_query(state: BotState, llm: Any) -> BotState:
 
 
 def add_edge(state: BotState, llm: Any) -> BotState:
-    """Tool to modify the execution graph by adding an edge based on user instruction."""
+    """Tool to modify the execution graph by adding an edge using extracted parameters."""
     tool_name = BotIntent.ADD_EDGE.value
     if not state.graph_output:
         state.text_content = TextContent(text="Error: No execution graph available to add an edge.")
         return update_scratchpad_reason(state, tool_name, "Graph missing.")
-
-    # Need to carefully prompt the LLM to parse the user instruction
-    # and apply it to the GraphOutput JSON structure.
-    # This is complex for an LLM - might require few-shot examples or a more structured input format.
-    prompt = f"""You need to modify an existing API execution graph (DAG) based on a user's request.
-    The graph is in JSON format matching the `GraphOutput` Pydantic model structure.
-    The user wants to add a dependency (an edge) between two operationIds.
-    Identify the 'from_node' and 'to_node' operationIds from the user's instruction and add the corresponding edge to the `edges` list.
-    Ensure the resulting graph is still valid (no cycles) and that the operationIds exist as nodes.
-    If the change creates a cycle, the operationIds are not in the graph, or the instruction is unclear, output an error message as JSON instead: {{ "error": "Reason why change failed" }}.
-    Otherwise, output the *entire* updated graph JSON object matching the `GraphOutput` structure.
-
-    Current Graph JSON:
-    ```json
-    {state.graph_output.model_dump_json()}
-    ```
-
-    User Instruction: "{state.user_input}"
-
-    Output either the updated graph JSON or the error JSON.
-    """
-    # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    res = llm.invoke(prompt) # Use the worker LLM passed to the tool
+    if not state.extracted_params:
+         state.text_content = TextContent(text="Error: Edge parameters were not extracted.")
+         return update_scratchpad_reason(state, tool_name, "Parameters missing.")
 
     try:
-        response_data = json.loads(res)
-        if "error" in response_data:
-             state.text_content = TextContent(text=f"Error modifying graph: {response_data['error']}")
-             return update_scratchpad_reason(state, tool_name, f"Modification failed: {response_data['error']}")
-        else:
-            # Validate and parse using Pydantic model
-            updated_graph_output = GraphOutput(**response_data)
-            # Optional: Perform programmatic cycle check again after LLM modification
-            is_valid, validation_reason = check_for_cycles(updated_graph_output)
-            if not is_valid:
-                 state.text_content = TextContent(text=f"Error modifying graph: Change created a cycle. {validation_reason}")
-                 return update_scratchpad_reason(state, tool_name, f"Modification failed: Created cycle. {validation_reason}")
+        # Validate extracted parameters against the expected model
+        params = AddEdgeParams(**state.extracted_params)
+        from_node_id = params.from_node
+        to_node_id = params.to_node
 
-            state.graph_output = updated_graph_output
-            state.text_content = TextContent(text="Execution graph updated successfully.")
-            return update_scratchpad_reason(state, tool_name, f"Added edge(s). New count: {len(updated_graph_output.edges)}")
-    except (json.JSONDecodeError, ValidationError) as e:
-        state.text_content = TextContent(text=f"Error parsing graph modification response: {e}. LLM output: {res[:200]}...")
-        # Keep the old graph if parsing failed
-        return update_scratchpad_reason(state, tool_name, f"Parsing modification response failed: {e}. LLM output: {res[:200]}...")
+        # Find nodes in the current graph
+        nodes_dict = {node.operationId: node for node in state.graph_output.nodes}
+        if from_node_id not in nodes_dict:
+             state.text_content = TextContent(text=f"Error: Node '{from_node_id}' not found in the graph.")
+             return update_scratchpad_reason(state, tool_name, f"Node '{from_node_id}' not found.")
+        if to_node_id not in nodes_dict:
+             state.text_content = TextContent(text=f"Error: Node '{to_node_id}' not found in the graph.")
+             return update_scratchpad_reason(state, tool_name, f"Node '{to_node_id}' not found.")
+
+        # Create the new edge
+        new_edge = Edge(from_node=from_node_id, to_node=to_node_id)
+
+        # Check if edge already exists
+        if new_edge in state.graph_output.edges:
+             state.text_content = TextContent(text=f"Edge from '{from_node_id}' to '{to_node_id}' already exists.")
+             return update_scratchpad_reason(state, tool_name, "Edge already exists.")
+
+        # Create a *copy* of the graph output to modify
+        updated_graph_output = state.graph_output.copy()
+        updated_graph_output.edges.append(new_edge)
+
+        # Perform programmatic cycle check on the updated graph
+        is_valid, validation_reason = check_for_cycles(updated_graph_output)
+
+        if not is_valid:
+             state.text_content = TextContent(text=f"Error modifying graph: Change created a cycle. {validation_reason}")
+             return update_scratchpad_reason(state, tool_name, f"Modification failed: Created cycle. {validation_reason}")
+
+        # If valid, update the state's graph
+        state.graph_output = updated_graph_output
+        state.text_content = TextContent(text=f"Execution graph updated successfully. Added edge from '{from_node_id}' to '{to_node_id}'.")
+        return update_scratchpad_reason(state, tool_name, f"Added edge {from_node_id} -> {to_node_id}. New edge count: {len(updated_graph_output.edges)}")
+
+    except ValidationError as e:
+         state.text_content = TextContent(text=f"Error validating extracted parameters for add_edge: {e}")
+         return update_scratchpad_reason(state, tool_name, f"Parameter validation failed: {e}")
+    except Exception as e:
+         state.text_content = TextContent(text=f"An unexpected error occurred while adding edge: {e}")
+         return update_scratchpad_reason(state, tool_name, f"Unexpected error: {e}")
 
 
 def validate_graph(state: BotState, llm: Any) -> BotState:
@@ -315,6 +327,7 @@ def openapi_help(state: BotState, llm: Any) -> BotState:
     """Tool to provide help about OpenAPI specs or handle initial spec parsing."""
     tool_name = BotIntent.OPENAPI_HELP.value
     # Check if the state contains spec text. If so, prioritize parsing.
+    # This tool acts as a multi-functional entry point
     if state.openapi_spec_text and not state.openapi_schema:
          print("OPENAPI_HELP tool: Spec text found, attempting to parse.")
          # Call the parsing logic directly or delegate to a helper
