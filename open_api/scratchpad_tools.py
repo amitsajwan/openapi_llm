@@ -1,6 +1,6 @@
 # tools.py
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 # Assume langchain.schema and langchain_openai are available
 # from langchain.schema import HumanMessage
 # from langchain_openai import AzureChatOpenAI # Replace MockLLM with your actual LLM import
@@ -8,135 +8,30 @@ from models import BotState, GraphOutput, Node, Edge, TextContent, BotIntent, AV
 from pydantic import ValidationError # Import for handling potential JSON parsing errors
 
 # --- Mock LLM Class for Demonstration ---
-# IMPORTANT: Replace this MockLLM class with your actual LangChain LLM instance
-# e.g., from langchain_openai import AzureChatOpenAI
-# llm = AzureChatOpenAI(...)
+# IMPORTANT: Replace this MockLLM class with your actual LangChain LLM instance(s)
+# You will instantiate specific instances for router and worker(s) in main.py
 class MockLLM:
     """
     A mock LLM for demonstration purposes.
     Replace this with your actual LangChain LLM instance.
     """
+    def __init__(self, role: str = "worker"):
+        self.role = role # Can simulate different behaviors based on role
+
     def invoke(self, prompt: str) -> str:
-        """Simulates an LLM call based on prompt keywords."""
-        print(f"\n--- Mock LLM Call ---")
+        """Simulates an LLM call based on prompt keywords and role."""
+        print(f"\n--- Mock LLM Call ({self.role}) ---")
         print(f"Prompt: {prompt[:500]}...") # Print truncated prompt
         print("----------------------")
-        # Simple rule-based mock responses based on prompt keywords
-        if "Parse this OpenAPI spec" in prompt:
-             # Mock schema parsing - simplified
-            mock_schema = {
-                "openapi": "3.0.0", "info": {"title": "Mock API"},
-                "paths": {
-                    "/users": {"get": {"operationId": "listUsers", "description": "Get users"}},
-                    "/users/{id}": {"get": {"operationId": "getUser", "description": "Get single user"}},
-                    "/login": {"post": {"operationId": "loginUser", "description": "Login"}},
-                    "/items": {"get": {"operationId": "listItems", "description": "List items"}}
-                }
-            }
-            print(f"Mock Response: {json.dumps(mock_schema)[:200]}...")
-            return json.dumps(mock_schema)
 
-        elif "generate an execution graph" in prompt:
-            # Mock graph generation (GraphOutput format)
-            mock_graph = {
-                "nodes": [
-                    {"operationId": "loginUser", "method": "POST", "path": "/login", "description": "Login"},
-                    {"operationId": "listUsers", "method": "GET", "path": "/users", "description": "Get users"},
-                    {"operationId": "getUser", "method": "GET", "path": "/users/{id}", "description": "Get single user"},
-                    {"operationId": "listItems", "method": "GET", "path": "/items", "description": "List items"}
-                ],
-                "edges": [
-                    {"from_node": "loginUser", "to_node": "listUsers"},
-                    {"from_node": "loginUser", "to_node": "getUser"},
-                    {"from_node": "loginUser", "to_node": "listItems"}
-                ]
-            }
-            print(f"Mock Response: {json.dumps(mock_graph)[:200]}...")
-            return json.dumps(mock_graph)
-
-        elif "generate example JSON payloads" in prompt:
-            # Mock payload generation and update graph
-            # In a real LLM, this prompt is complex. Mocking simple update.
-            try:
-                # Extract current graph from prompt (simplified)
-                graph_json_str = prompt.split("Current Graph JSON:")[1].split("Output only the updated graph JSON object.")[0].strip()
-                graph_output_dict = json.loads(graph_json_str)
-                graph_output = GraphOutput(**graph_output_dict)
-
-                # Find the login node and add a mock payload
-                for node in graph_output.nodes:
-                    if node.operationId == "loginUser":
-                        node.payload = {"username": "test_user", "password": "password123"}
-                        break # Assume only one login node
-
-                print(f"Mock Response (Payload Update): {graph_output.model_dump_json()[:200]}...")
-                return graph_output.model_dump_json()
-            except Exception as e:
-                print(f"Mock Response (Payload Update Error): {{'error': '{str(e)}'}}")
-                return "{}" # Return empty or error JSON
-
-        elif "Modify this execution graph JSON" in prompt:
-             # Mock graph modification - just add a dummy edge for demo
-             # In real code, LLM would parse instruction and modify JSON intelligently
-            try:
-                graph_json_str = prompt.split("Current Graph JSON:")[1].split("User Instruction:")[0].strip()
-                graph_output_dict = json.loads(graph_json_str)
-                graph_output = GraphOutput(**graph_output_dict)
-
-                # Simple mock: add an edge if user mentions 'getUser' and 'listItems'
-                user_instruction = prompt.split("User Instruction:")[1].strip()
-                if 'getUser' in user_instruction and 'listItems' in user_instruction:
-                     new_edge = Edge(from_node="getUser", to_node="listItems")
-                     if new_edge not in graph_output.edges: # Avoid duplicates in mock
-                         graph_output.edges.append(new_edge)
-                         print("Mock: Added edge getUser -> listItems")
-                     else:
-                          print("Mock: Edge already exists")
-                else:
-                     print("Mock: No specific edge instruction recognized")
-
-
-                print(f"Mock Response (Modify Graph): {graph_output.model_dump_json()[:200]}...")
-                return graph_output.model_dump_json()
-            except Exception as e:
-                print(f"Mock Response (Modify Error): {{'error': '{str(e)}'}}")
-                return json.dumps({"error": f"Mock modification failed: {str(e)}"}) # Return error JSON format
-
-        elif "Analyze the following execution graph JSON" in prompt:
-            # Mock graph validation explanation
-            # The actual cycle check is done programmatically in the tool
-            is_valid = "No cycles detected" in prompt # Check based on programmatic result in prompt
-            reason = "The graph structure looks good." if is_valid else "There seems to be a loop."
-            print(f"Mock Response: '{reason}'")
-            return reason # Mock LLM just explains the result
-
-        elif "Explain the workflow represented by the following execution graph JSON" in prompt:
-            # Mock explanation generation
-            print(f"Mock Response: 'This is a mock explanation of the graph...'")
-            return "This is a mock explanation of the graph based on the provided structure, highlighting dependencies like login before accessing user data."
-
-        elif "Answer based on this OpenAPI schema" in prompt:
-            # Mock general query answering
-             print(f"Mock Response: 'This is a mock answer based on the schema...'")
-             return "This is a mock answer based on the schema. It seems the API allows fetching user data and items after login."
-
-        elif "Output the current execution graph JSON" in prompt:
-             # Mock graph JSON output - extract from prompt
-            graph_json_str = prompt.split("Graph JSON:")[1].strip()
-            print(f"Mock Response: {graph_json_str[:200]}...")
-            return graph_json_str
-
-        elif "asking for help about OpenAPI specifications" in prompt:
-             # Mock OpenAPI help
-             print(f"Mock Response: 'OpenAPI specs describe RESTful APIs...'")
-             return "OpenAPI specifications (formerly Swagger) are a standard, language-agnostic description format for RESTful APIs. They help define available endpoints, operations, parameters, and responses."
-
-        elif "Available tools" in prompt:
-             # This is the router prompt - mock intent selection
-             # In real router, LLM logic decides based on user input & history
+        if self.role == "router":
+             # Router mock returns just the intent string
              user_input = prompt.split("User:")[1].split("Available tools:")[0].strip()
-             if "create" in user_input.lower() or "generate" in user_input.lower() and "graph" in user_input.lower():
+             if "create" in user_input.lower() or ("generate" in user_input.lower() and "graph" in user_input.lower()):
                  intent = BotIntent.GENERATE_GRAPH.value
+             elif "parse spec" in user_input.lower() or "read spec" in user_input.lower():
+                  # If user explicitly asks to parse, route to OPENAPI_HELP (which contains parsing logic)
+                  intent = BotIntent.OPENAPI_HELP.value
              elif "add edge" in user_input.lower() or "modify graph" in user_input.lower():
                  intent = BotIntent.ADD_EDGE.value
              elif "explain" in user_input.lower() or "describe" in user_input.lower() and "graph" in user_input.lower():
@@ -153,22 +48,120 @@ class MockLLM:
                  intent = BotIntent.GENERAL_QUERY.value # Default to general query
 
              print(f"Mock Response (Router Intent): {intent}")
-             return intent # Router mock returns just the intent string
+             return intent
 
-        # Default response for unhandled prompts
-        print(f"Mock Response: 'Mock response for unexpected prompt.'")
-        return "Mock response for unexpected prompt."
+        # --- Worker LLM Mock Responses ---
+        elif self.role == "worker":
+            if "Parse this OpenAPI spec" in prompt:
+                 # Mock schema parsing - simplified
+                mock_schema = {
+                    "openapi": "3.0.0", "info": {"title": "Mock API"},
+                    "paths": {
+                        "/users": {"get": {"operationId": "listUsers", "description": "Get users"}},
+                        "/users/{id}": {"get": {"operationId": "getUser", "description": "Get single user"}},
+                        "/login": {"post": {"operationId": "loginUser", "description": "Login"}},
+                        "/items": {"get": {"operationId": "listItems", "description": "List items"}}
+                    }
+                }
+                print(f"Mock Response: {json.dumps(mock_schema)[:200]}...")
+                return json.dumps(mock_schema)
 
-# Instantiate the mock LLM (REPLACE THIS WITH YOUR ACTUAL LLM)
-llm = MockLLM()
-# Example with AzureChatOpenAI (uncomment and configure if using)
-# from langchain_openai import AzureChatOpenAI
-# llm = AzureChatOpenAI(
-#     azure_endpoint="YOUR_AZURE_ENDPOINT",
-#     api_key="YOUR_API_KEY",
-#     azure_deployment="YOUR_DEPLOYMENT_NAME",
-#     api_version="YOUR_API_VERSION" # e.g., "2023-05-15"
-# )
+            elif "generate an execution graph" in prompt:
+                # Mock graph generation (GraphOutput format)
+                mock_graph = {
+                    "nodes": [
+                        {"operationId": "loginUser", "method": "POST", "path": "/login", "description": "Login"},
+                        {"operationId": "listUsers", "method": "GET", "path": "/users", "description": "Get users"},
+                        {"operationId": "getUser", "method": "GET", "path": "/users/{id}", "description": "Get single user"},
+                        {"operationId": "listItems", "method": "GET", "path": "/items", "description": "List items"}
+                    ],
+                    "edges": [
+                        {"from_node": "loginUser", "to_node": "listUsers"},
+                        {"from_node": "loginUser", "to_node": "getUser"},
+                        {"from_node": "loginUser", "to_node": "listItems"}
+                    ]
+                }
+                print(f"Mock Response: {json.dumps(mock_graph)[:200]}...")
+                return json.dumps(mock_graph)
+
+            elif "generate example JSON payloads" in prompt:
+                # Mock payload generation and update graph
+                try:
+                    # Extract current graph from prompt (simplified)
+                    graph_json_str = prompt.split("Current Graph JSON:")[1].split("Output only the updated graph JSON object.")[0].strip()
+                    graph_output_dict = json.loads(graph_json_str)
+                    graph_output = GraphOutput(**graph_output_dict)
+
+                    # Find the login node and add a mock payload
+                    for node in graph_output.nodes:
+                        if node.operationId == "loginUser":
+                            node.payload = {"username": "test_user", "password": "password123"}
+                            break # Assume only one login node
+
+                    print(f"Mock Response (Payload Update): {graph_output.model_dump_json()[:200]}...")
+                    return graph_output.model_dump_json()
+                except Exception as e:
+                    print(f"Mock Response (Payload Update Error): {{'error': '{str(e)}'}}")
+                    return "{}" # Return empty or error JSON
+
+            elif "Modify this execution graph JSON" in prompt:
+                 # Mock graph modification - just add a dummy edge for demo
+                try:
+                    graph_json_str = prompt.split("Current Graph JSON:")[1].split("User Instruction:")[0].strip()
+                    graph_output_dict = json.loads(graph_json_str)
+                    graph_output = GraphOutput(**graph_output_dict)
+
+                    # Simple mock: add an edge if user mentions 'getUser' and 'listItems'
+                    user_instruction = prompt.split("User Instruction:")[1].strip()
+                    if 'getUser' in user_instruction and 'listItems' in user_instruction:
+                         new_edge = Edge(from_node="getUser", to_node="listItems")
+                         if new_edge not in graph_output.edges: # Avoid duplicates in mock
+                             graph_output.edges.append(new_edge)
+                             print("Mock: Added edge getUser -> listItems")
+                         else:
+                              print("Mock: Edge already exists")
+                    else:
+                         print("Mock: No specific edge instruction recognized")
+
+                    print(f"Mock Response (Modify Graph): {graph_output.model_dump_json()[:200]}...")
+                    return graph_output.model_dump_json()
+                except Exception as e:
+                    print(f"Mock Response (Modify Error): {{'error': '{str(e)}'}}")
+                    return json.dumps({"error": f"Mock modification failed: {str(e)}"}) # Return error JSON format
+
+            elif "Based on the following validation result" in prompt:
+                # Mock graph validation explanation
+                # The actual cycle check is done programmatically in the tool
+                is_valid = "Valid" in prompt # Check based on programmatic result in prompt
+                reason = "The graph structure looks good." if is_valid else "There seems to be a loop."
+                print(f"Mock Response: '{reason}'")
+                return reason # Mock LLM just explains the result
+
+            elif "Explain the workflow represented by the following execution graph JSON" in prompt:
+                # Mock explanation generation
+                print(f"Mock Response: 'This is a mock explanation of the graph...'")
+                return "This is a mock explanation of the graph based on the provided structure, highlighting dependencies like login before accessing user data."
+
+            elif "Answer the following question based on the provided OpenAPI schema JSON" in prompt:
+                # Mock general query answering
+                 print(f"Mock Response: 'This is a mock answer based on the schema...'")
+                 return "This is a mock answer based on the schema. It seems the API allows fetching user data and items after login."
+
+            elif "Output the current execution graph JSON" in prompt:
+                 # Mock graph JSON output - extract from prompt
+                graph_json_str = prompt.split("Graph JSON:")[1].strip()
+                print(f"Mock Response: {graph_json_str[:200]}...")
+                return graph_json_str
+
+            elif "asking for help about OpenAPI specifications" in prompt:
+                 # Mock OpenAPI help
+                 print(f"Mock Response: 'OpenAPI specs describe RESTful APIs...'")
+                 return "OpenAPI specifications (formerly Swagger) are a standard, language-agnostic description format for RESTful APIs. They help define available endpoints, operations, parameters, and responses."
+
+        # Default response for unhandled prompts or roles
+        print(f"Mock Response: 'Mock response for unexpected prompt or role.'")
+        return "Mock response for unexpected prompt or role."
+
 
 # --- Helper for programmatic cycle detection ---
 # LLMs are not reliable for algorithmic tasks like cycle detection.
@@ -213,7 +206,7 @@ def check_for_cycles(graph: GraphOutput) -> tuple[bool, str]:
 
 
 # --- Tool Functions ---
-# Each tool function takes BotState and the LLM instance, and returns the updated BotState.
+# Each tool function takes BotState and the LLM instance (which will be the worker LLM), and returns the updated BotState.
 
 def update_scratchpad_reason(state: BotState, tool_name: str, details: str) -> BotState:
      """Helper to append reasoning/details to the scratchpad."""
@@ -237,7 +230,7 @@ def parse_openapi(state: BotState, llm: Any) -> BotState:
 
     try:
         # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-        res = llm.invoke(prompt) # Using mock LLM invoke
+        res = llm.invoke(prompt) # Use the worker LLM passed to the tool
 
         schema = json.loads(res)
         state.openapi_schema = schema
@@ -273,7 +266,7 @@ def generate_api_execution_graph(state: BotState, llm: Any) -> BotState:
     ```
     """
     # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    res = llm.invoke(prompt) # Using mock LLM invoke
+    res = llm.invoke(prompt) # Use the worker LLM passed to the tool
 
     try:
         graph_data = json.loads(res)
@@ -310,7 +303,7 @@ def generate_payload(state: BotState, llm: Any) -> BotState:
     Output only the updated graph JSON object.
     """
     # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    res = llm.invoke(prompt) # Using mock LLM invoke
+    res = llm.invoke(prompt) # Use the worker LLM passed to the tool
 
     try:
         graph_data = json.loads(res)
@@ -350,7 +343,7 @@ def general_query(state: BotState, llm: Any) -> BotState:
     Output only the answer text.
     """
     # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    res = llm.invoke(prompt) # Using mock LLM invoke
+    res = llm.invoke(prompt) # Use the worker LLM passed to the tool
 
     state.text_content = TextContent(text=res)
     return update_scratchpad_reason(state, tool_name, f"Answered general query. Response length: {len(res)}")
@@ -384,7 +377,7 @@ def add_edge(state: BotState, llm: Any) -> BotState:
     Output either the updated graph JSON or the error JSON.
     """
     # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    res = llm.invoke(prompt) # Using mock LLM invoke
+    res = llm.invoke(prompt) # Use the worker LLM passed to the tool
 
     try:
         response_data = json.loads(res)
@@ -431,9 +424,9 @@ def validate_graph(state: BotState, llm: Any) -> BotState:
     Output only the explanation text.
     """
     # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    explanation_text = llm.invoke(prompt) # Using mock LLM invoke
+    res = llm.invoke(prompt) # Use the worker LLM passed to the tool
 
-    state.text_content = TextContent(text=f"Validation result: {'Valid' if is_valid else 'Invalid'}. {explanation_text}")
+    state.text_content = TextContent(text=f"Validation result: {'Valid' if is_valid else 'Invalid'}. {res}")
     return update_scratchpad_reason(state, tool_name, f"Graph validation performed. Valid: {is_valid}. Reason: {validation_reason[:100]}...")
 
 
@@ -454,7 +447,7 @@ def describe_execution_plan(state: BotState, llm: Any) -> BotState:
     Output only the explanation text.
     """
     # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    res = llm.invoke(prompt) # Using mock LLM invoke
+    res = llm.invoke(prompt) # Use the worker LLM passed to the tool
 
     state.text_content = TextContent(text=res)
     return update_scratchpad_reason(state, tool_name, f"Generated graph description. Length: {len(res)}")
@@ -474,13 +467,21 @@ def get_execution_graph_json(state: BotState, llm: Any) -> BotState:
 
 
 def openapi_help(state: BotState, llm: Any) -> BotState:
-    """Tool to provide help about OpenAPI specs."""
+    """Tool to provide help about OpenAPI specs or handle initial spec parsing."""
     tool_name = BotIntent.OPENAPI_HELP.value
-    prompt = f"The user is asking for help about OpenAPI specifications based on their input: '{state.user_input}'. Provide helpful information."
-    # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
-    res = llm.invoke(prompt) # Using mock LLM invoke
-    state.text_content = TextContent(text=res)
-    return update_scratchpad_reason(state, tool_name, "Provided OpenAPI help.")
+    # Check if the state contains spec text. If so, prioritize parsing.
+    if state.openapi_spec_text and not state.openapi_schema:
+         print("OPENAPI_HELP tool: Spec text found, attempting to parse.")
+         # Call the parsing logic directly or delegate to a helper
+         return parse_openapi(state, llm) # Use the worker LLM passed to this tool
+    else:
+        # Otherwise, provide general help about OpenAPI
+        print("OPENAPI_HELP tool: Providing general help.")
+        prompt = f"The user is asking for help about OpenAPI specifications based on their input: '{state.user_input}'. Provide helpful information."
+        # res = llm([HumanMessage(content=prompt)]).content # Use this with actual LangChain
+        res = llm.invoke(prompt) # Use the worker LLM passed to the tool
+        state.text_content = TextContent(text=res)
+        return update_scratchpad_reason(state, tool_name, "Provided general OpenAPI help.")
 
 
 # Placeholder tools - implement these if needed
@@ -503,10 +504,12 @@ def unknown_intent(state: BotState, llm: Any) -> BotState:
 
 
 # Map BotIntent enum values (string values) to tool functions
+# Note: The 'llm' argument passed to these functions when called by the graph
+# will be the worker LLM instance provided during graph building.
 TOOL_FUNCTIONS = {
     BotIntent.GENERATE_GRAPH.value: generate_api_execution_graph,
     BotIntent.GENERAL_QUERY.value: general_query,
-    BotIntent.OPENAPI_HELP.value: openapi_help, # Re-purposed for initial parsing as well
+    BotIntent.OPENAPI_HELP.value: openapi_help, # This tool now handles both parsing and general help
     BotIntent.GENERATE_PAYLOAD.value: generate_payload,
     BotIntent.ADD_EDGE.value: add_edge,
     BotIntent.VALIDATE_GRAPH.value: validate_graph,
