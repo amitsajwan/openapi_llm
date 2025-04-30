@@ -120,51 +120,61 @@ class OpenApiReactRouterManager:
         except Exception as e:
             return False, f"Validation failed: {e}"
 
-    def route_intent(self, state: RouterState) -> RouterState:
-        state.response = (
-            "You are OpenAPI assistant router.\n"
-            f"Current graph/API status:\n{state.user_input}\n"
-            f"Execution graph: {'yes' if state.execution_graph else 'no'}\n"
-            f"Payloads generated: {'yes' if state.payloads else 'no'}\n"
-            f"Available tools: {list(self.tools.keys())}\n"
-            f"Summary: {state.user_input or ''}"
-        )
-        if state.next_step != "execute_plan":
-            if state.user_input in [a[0] for a in state.action_history[-2:]]:
-                state.response = "It seems you asked this recently. How about trying something else?"
-                state.scratchpad += "Duplicate question detected.\n"
-                return state
-        prompt = (
-            f"User goal: {state.user_input}\n"
-            "If the user asks a question, use 'answer'. "
-            "If they want to run something, use 'execute_workflow' or 'simulate_load_test'. "
-            "If they want to build/modify sequence, use 'generate_sequence'. "
-            "No need to add edge when we generate the graph from scratch. "
-            "If they ask to generate payloads, use 'generate_payloads'. "
-            "If a multi-step process is needed, output a plan (e.g., JSON: {\"next_step\": [\"tool1\", \"tool2\"]})."
-        )
-        response = self.llm_router([HumanMessage(content=prompt)]).content.strip()
-        state.intent = response
-        state.scratchpad += f"Router intent output: {response}\n"
+def route_intent(self, state: RouterState) -> RouterState:
+    # Update context
+    preamble = (
+        "You are OpenAPI assistant router.\n"
+        f"Current graph/API status:\n{state.user_input}\n"
+        f"Execution graph: {'yes' if state.execution_graph else 'no'}\n"
+        f"Payloads generated: {'yes' if state.payloads else 'no'}\n"
+        f"Available tools: {list(self.tools.keys())}\n"
+    )
 
-        try:
-            output = json.loads(response)
-            if "plan" in output:
-                state.plan = output["plan"]
-                state.next_step = "execute_plan"
-            elif "next_step" in output and output["next_step"] in self.tools:
-                state.next_step = output["next_step"]
-            else:
-                state.next_step = "unknown_intent"
-                state.plan = None
-        except json.JSONDecodeError:
+    routing_instructions = (
+        "If the user asks a question, use 'answer'. "
+        "If they want to run something, use 'execute_workflow' or 'simulate_load_test'. "
+        "If they want to build/modify sequence, use 'generate_sequence'. "
+        "No need to add edge when we generate the graph from scratch. "
+        "If they ask to generate payloads, use 'generate_payloads'. "
+        "If a multi-step process is needed, output a plan (e.g., JSON: {\"next_step\": [\"tool1\", \"tool2\"]})."
+    )
+
+    # Include the scratchpad (past messages) to give the LLM context
+    scratchpad_text = state.scratchpad if state.scratchpad else ""
+    prompt = (
+        f"{preamble}\n"
+        f"{routing_instructions}\n\n"
+        f"{scratchpad_text}\n"
+        f"User: {state.user_input}\nAssistant:"
+    )
+
+    # LLM call
+    response = self.llm_router([HumanMessage(content=prompt)]).content.strip()
+    state.intent = response
+
+    # Update scratchpad
+    state.scratchpad = (state.scratchpad or "") + f"\nUser: {state.user_input}\nAssistant: {response}"
+
+    # Try to parse plan or next_step
+    try:
+        output = json.loads(response)
+        if "plan" in output:
+            state.plan = output["plan"]
+            state.next_step = "execute_plan"
+        elif "next_step" in output and output["next_step"] in self.tools:
+            state.next_step = output["next_step"]
+        else:
             state.next_step = "unknown_intent"
             state.plan = None
+    except json.JSONDecodeError:
+        state.next_step = "unknown_intent"
+        state.plan = None
 
-        if state.user_input:
-            state.action_history.append((state.user_input, state.next_step))
+    # Save action history
+    if state.user_input:
+        state.action_history.append((state.user_input, state.next_step))
 
-        return state
+    return state
 
     def build_graph(self):
         builder = StateGraph(RouterState)
