@@ -1,58 +1,55 @@
-"""
-graph.py
+# graph.py
 
-Defines the LangGraph StateGraph for the OpenAPI testing framework.
-Nodes:
-  - router: determines next action
-  - load_spec, list_apis, generate_sequence, generate_payload, call_api, validate_graph, save_results
-Edges are dynamic: router -> next tool -> router until plan empty.
+from langgraph.graph import StateGraph
+from langgraph.checkpoint.memory import MemorySaver
 
-Integrates MemorySaver for state persistence.
-"""
-
-from langgraph import StateGraph, MemorySaver
+from models import BotState
 from router import router
 from tools import (
-    load_spec, list_apis, generate_sequence,
-    generate_payload, call_api, validate_graph, save_results
+    load_spec,
+    list_apis,
+    generate_sequence,
+    generate_payload,
+    call_api,
+    validate_graph,
+    save_results,
 )
 
+def build_openapi_graph():
+    # 1) Initialize StateGraph with the BotState schema
+    graph = StateGraph(state_schema=BotState, name="openapi_test_flow")  
 
-def build_openapi_graph() -> StateGraph:
-    # Create a new graph
-    graph = StateGraph(name="openapi_test_flow")
+    # 2) Add the router node as the entry point
+    graph.add_node("router", router)  
 
-    # Add router node
-    graph.add_node(router, name="router")
+    # 3) Add each tool node correctly: (key, function)
+    graph.add_node("load_spec", load_spec)
+    graph.add_node("list_apis", list_apis)
+    graph.add_node("generate_sequence", generate_sequence)
+    graph.add_node("generate_payload", generate_payload)
+    graph.add_node("call_api", call_api)
+    graph.add_node("validate_graph", validate_graph)
+    graph.add_node("save_results", save_results)
 
-    # Add tool nodes
-    graph.add_node(load_spec, name="load_spec")
-    graph.add_node(list_apis, name="list_apis")
-    graph.add_node(generate_sequence, name="generate_sequence")
-    graph.add_node(generate_payload, name="generate_payload")
-    graph.add_node(call_api, name="call_api")
-    graph.add_node(validate_graph, name="validate_graph")
-    graph.add_node(save_results, name="save_results")
+    # 4) Wire edges: router → tool → router
+    tool_names = [
+        "load_spec", "list_apis", "generate_sequence",
+        "generate_payload", "call_api", "validate_graph", "save_results"
+    ]
+    for t in tool_names:
+        graph.add_edge("router", t)
+        graph.add_edge(t, "router")
 
-    # Dynamic edges: router outputs next_action -> that tool -> back to router
-    # LangGraph will route based on router.next_action, so we only need a generic feedback edge
-    graph.add_edge("router", "load_spec")
-    graph.add_edge("router", "list_apis")
-    graph.add_edge("router", "generate_sequence")
-    graph.add_edge("router", "generate_payload")
-    graph.add_edge("router", "call_api")
-    graph.add_edge("router", "validate_graph")
-    graph.add_edge("router", "save_results")
-    graph.add_edge("load_spec", "router")
-    graph.add_edge("list_apis", "router")
-    graph.add_edge("generate_sequence", "router")
-    graph.add_edge("generate_payload", "router")
-    graph.add_edge("call_api", "router")
-    graph.add_edge("validate_graph", "router")
-    graph.add_edge("save_results", "router")
+    # 5) Set the entry point so execution begins at the router
+    graph.set_entry_point("router")  
 
-    # Attach MemorySaver for checkpointing plan and results
+    # 6) (Optional) You can set a finish point, or rely on edges to END
+    # graph.set_finish_point("save_results")
+
+    # 7) Attach MemorySaver for checkpointing state
     memory = MemorySaver()
     graph.use_saver(memory)
 
-    return graph
+    # 8) Compile into a runnable graph (supports .invoke, .stream, .astream)
+    compiled = graph.compile(checkpointer=memory)
+    return compiled
